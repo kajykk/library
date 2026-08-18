@@ -455,6 +455,22 @@ def test_search_index_sync(client, auth_headers):
     assert all("氟利昂" in (h["title"] + h["snippet"]).replace("<mark>", "").replace("</mark>", "") for h in short)
 
 
+def test_search_two_char_query_ilike_fallback(client, auth_headers):
+    # trigram FTS 需要 >= 3 字符，2 字查询必须走 ILIKE 兜底且能命中正文
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": "两字查询笔记", "content": "精进思维：持续改善每日习惯"},
+    )
+
+    hits = client.get(f"{API}/search", headers=auth_headers, params={"q": "精进"}).json()
+    assert any(h["title"] == "两字查询笔记" for h in hits)
+
+    # 多词短查询（每词 2 字）也应命中
+    hits2 = client.get(f"{API}/search", headers=auth_headers, params={"q": "持续 改善"}).json()
+    assert any(h["title"] == "两字查询笔记" for h in hits2)
+
+
 # ---------- 版本历史 ----------
 
 def test_document_versions_and_restore(client, auth_headers):

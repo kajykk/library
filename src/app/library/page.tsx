@@ -69,9 +69,12 @@ function LibraryPageInner() {
     startedAt: number;
     finishedAt: number | null;
   } | null>(null);
-  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
   const [dataMode, setDataMode] = useState<DataSourceMode>('local');
   const [migrationHint, setMigrationHint] = useState(0);
+  // 大书库增量渲染：先渲染前 60 本，滚动到底点击"加载更多"
+  const PAGE_STEP = 60;
+  const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
+  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadData();
@@ -91,14 +94,6 @@ function LibraryPageInner() {
       } else {
         setMigrationHint(0);
       }
-
-      const coverEntries = await Promise.all(
-        books.map(async (book) => {
-          const url = await getBookCoverUrl(book.id);
-          return [book.id, url] as const;
-        })
-      );
-      setCoverUrls(Object.fromEntries(coverEntries.filter(([, url]) => Boolean(url))) as Record<string, string>);
     } finally {
       setIsLoading(false);
     }
@@ -297,6 +292,32 @@ function LibraryPageInner() {
       return matchesCategory && matchesQuery && matchesAuthor;
     });
   }, [books, searchQuery, selectedCategory, authorFilter]);
+
+  const visibleBooks = filteredBooks.slice(0, visibleCount);
+
+  // 封面按需加载：只为当前可见区（含预取 1 页）拉取，避免大书库全量请求
+  useEffect(() => {
+    const targets = visibleBooks
+      .concat(filteredBooks.slice(visibleCount, visibleCount + PAGE_STEP))
+      .filter((b) => !coverUrls[b.id]);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    targets.forEach(async (book) => {
+      const url = await getBookCoverUrl(book.id);
+      if (!cancelled && url) {
+        setCoverUrls((prev) => (prev[book.id] ? prev : { ...prev, [book.id]: url }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [books, searchQuery, selectedCategory, authorFilter, visibleCount]);
+
+  // 过滤条件变化时回到第一页
+  useEffect(() => {
+    setVisibleCount(PAGE_STEP);
+  }, [searchQuery, selectedCategory, authorFilter]);
 
   const openReader = (book: Book) => {
     router.push(`/reader/${book.id}`);
@@ -595,7 +616,7 @@ function LibraryPageInner() {
                 </div>
               ) : viewMode === 'grid' ? (
                 <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                  {filteredBooks.map(book => (
+                  {visibleBooks.map(book => (
                     <div
                       key={book.id}
                       className="group bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition-shadow"
@@ -662,7 +683,7 @@ function LibraryPageInner() {
                 </div>
               ) : (
                 <div className="divide-y divide-gray-200">
-                  {filteredBooks.map(book => (
+                  {visibleBooks.map(book => (
                     <div
                       key={book.id}
                       className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors group"
@@ -718,6 +739,16 @@ function LibraryPageInner() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+              {visibleCount < filteredBooks.length && (
+                <div className="px-6 pb-8">
+                  <button
+                    onClick={() => setVisibleCount((c) => c + PAGE_STEP)}
+                    className="w-full py-3 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    加载更多（剩余 {filteredBooks.length - visibleCount} 本）
+                  </button>
                 </div>
               )}
             </div>

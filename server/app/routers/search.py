@@ -179,10 +179,15 @@ def search(
             for doc, headline in rows
         ]
 
-    if fts_available() and len(q) >= 3:
-        try:
-            return _search_fts(db, q, type, limit)
-        except Exception:
-            # 触发器同步异常时兜底 ILIKE
-            pass
+    # trigram 索引只含 >= 3 字符的 token：只要任一词短于 3 字，FTS 会静默漏配
+    #（如 "持续 改善"），此时整体回退 ILIKE
+    if fts_available():
+        terms = q.split()
+        short_term = any(0 < len(t) < 3 for t in terms)
+        if not short_term and len(q) >= 3:
+            try:
+                return _search_fts(db, q, type, limit)
+            except Exception:
+                # 触发器同步异常时兜底 ILIKE
+                pass
     return _search_ilike(db, q, type, limit)

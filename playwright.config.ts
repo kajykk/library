@@ -9,11 +9,13 @@ export default defineConfig({
   testDir: 'e2e',
   timeout: 90_000,
   retries: 1,
+  workers: 1,
   globalSetup: './e2e/global-setup.ts',
   reporter: [['list']],
   use: {
     baseURL: `http://localhost:${FRONTEND_PORT}`,
-    channel: 'msedge',
+    // 本机 win 用已安装的 Edge；CI(linux) 用 Playwright 自带 chromium
+    channel: process.platform === 'win32' ? 'msedge' : undefined,
     headless: true,
     trace: 'retain-on-failure',
     navigationTimeout: 90_000,
