@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(circle at top, rgba(14, 165, 233, 0.08), transparent 30%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.18);
+  color: #0f172a;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* 阅读器划线高亮 */
+.kb-highlight {
+  background: rgba(250, 204, 21, 0.45);
+  border-radius: 2px;
+  padding: 0 1px;
+  color: inherit;
+}
+.kb-highlight:hover {
+  background: rgba(250, 204, 21, 0.7);
+}
+
+.kb-wikilink {
+  color: #7c3aed;
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(124, 58, 237, 0.4);
+}

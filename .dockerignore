@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.github
+terminals
+server/__pycache__
+server/.pytest_cache
+server/data
+server/*.db
+server/.env
+server/tests/__pycache__
+*.log
+backups

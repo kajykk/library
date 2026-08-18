@@ -1,0 +1,58 @@
+services:
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      KB_DATABASE_URL: postgresql+psycopg2://kb:kb@db:5432/knowledge_base
+      KB_API_TOKEN: ${KB_API_TOKEN:-change-me}
+      KB_DATA_DIR: /data
+      KB_CORS_ORIGINS: ${KB_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      KB_AUTO_CREATE_TABLES: "0" # 生产走 Alembic
+    volumes:
+      - kb-data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    build: ./db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kb
+      POSTGRES_PASSWORD: kb
+      POSTGRES_DB: knowledge_base
+    volumes:
+      - kb-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kb -d knowledge_base"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - kb-redis:/data
+
+  web:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_API_TOKEN: ${KB_API_TOKEN:-change-me}
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_TOKEN: ${KB_API_TOKEN:-change-me}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  kb-data:
+  kb-pgdata:
+  kb-redis:

@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# npm 本地缓存（沙箱环境）
+.npm-cache/
+
+# pip 本地缓存
+.pip-cache/
+
+# env
+.env
+.env.*
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# python / server 运行时产物
+__pycache__/
+*.pyc
+.pytest_cache/
+server/.env
+server/*.db
+server/data/
+.venv/
