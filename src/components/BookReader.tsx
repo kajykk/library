@@ -73,6 +73,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const contentRef = useRef<HTMLDivElement>(null);
   const txtLinesRef = useRef<string[] | null>(null);
   const pdfDocRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(null);
+  // PDF 页面渲染缓存（dataURL，最多保留 12 页）+ 渲染序号防快速翻页乱序
+  const pdfPageCache = useRef(new Map<number, string>());
+  const pdfRenderSeq = useRef(0);
   const readingStartTimeRef = useRef<number>(Date.now());
   const currentPageRef = useRef<number>(initialPosition);
   const initialPositionRef = useRef<number>(initialPosition);
@@ -201,7 +204,46 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     }
   };
 
+  const pdfImageHtml = (imageUrl: string) =>
+    `<div style="text-align: center;"><img src="${imageUrl}" style="max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" /></div>`;
+
+  const cachePdfPage = (pageNumber: number, imageUrl: string) => {
+    const cache = pdfPageCache.current;
+    if (cache.has(pageNumber)) return;
+    if (cache.size >= 12) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(pageNumber, imageUrl);
+  };
+
+  const prefetchPdfPages = (pdf: any, pageNumber: number) => {
+    const targets = [pageNumber + 1, pageNumber - 1, pageNumber + 2, pageNumber - 2]
+      .filter((n) => n >= 1 && n <= pdf.numPages && !pdfPageCache.current.has(n));
+    targets.forEach(async (n) => {
+      try {
+        const page = await pdf.getPage(n);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await page.render({ canvasContext: context, viewport }).promise;
+        cachePdfPage(n, canvas.toDataURL('image/png'));
+      } catch {
+        /* 预取失败忽略 */
+      }
+    });
+  };
+
   const renderPdfPage = async (pdf: any, pageNumber: number) => {
+    const cached = pdfPageCache.current.get(pageNumber);
+    if (cached) {
+      setContent(pdfImageHtml(cached));
+      return;
+    }
+    const seq = ++pdfRenderSeq.current;
     try {
       const page = await pdf.getPage(pageNumber);
       const scale = 1.5;
@@ -220,10 +262,16 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       }).promise;
 
       const imageUrl = canvas.toDataURL('image/png');
-      setContent(`<div style="text-align: center;"><img src="${imageUrl}" style="max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" /></div>`);
+      cachePdfPage(pageNumber, imageUrl);
+      if (seq === pdfRenderSeq.current) {
+        setContent(pdfImageHtml(imageUrl));
+      }
+      prefetchPdfPages(pdf, pageNumber);
     } catch (error) {
-      console.error('PDF page render failed:', error);
-      setContent('<p>PDF 页面渲染失败</p>');
+      if (seq === pdfRenderSeq.current) {
+        console.error('PDF page render failed:', error);
+        setContent('<p>PDF 页面渲染失败</p>');
+      }
     }
   };
 
@@ -747,6 +795,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
               <button
                 onClick={() => handlePageChange(currentPage - 1)}
                 disabled={currentPage <= (book.format === 'pdf' ? 1 : 0)}
+                title="上一页"
                 className="p-2 hover:bg-gray-100 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 <ChevronLeft className="w-5 h-5" />
@@ -773,6 +822,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
               <button
                 onClick={() => handlePageChange(currentPage + 1)}
                 disabled={currentPage >= (book.format === 'pdf' ? totalPages : Math.max(totalPages - 1, 0))}
+                title="下一页"
                 className="p-2 hover:bg-gray-100 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 <ChevronRight className="w-5 h-5" />

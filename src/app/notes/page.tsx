@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useEditor, EditorContent, Extension } from '@tiptap/react';
+import { useEditor, EditorContent, Extension, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from 'tiptap-markdown';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -36,6 +36,9 @@ import {
   Wifi,
   WifiOff,
   Users,
+  Minus,
+  Heading1,
+  Heading3,
 } from 'lucide-react';
 import { ApiDocument, listDocuments, patchDocument, createDocument, deleteDocument, setDocumentTags, getBacklinks, getUnlinkedMentions, createLink, getVersions, getVersion, restoreVersion, searchAnnotations, getCollabWsUrl, getApiToken, downloadMarkdownExport, AnnotationHit, DocumentVersionSummary, DocumentVersionDetail, Backlink, DocumentPatch } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
@@ -50,6 +53,26 @@ function highlightSnippet(snippet: string) {
     ),
   );
 }
+
+// ---------- 斜杠命令菜单 ----------
+
+const SLASH_ITEMS: Array<{
+  id: string;
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+  apply: (editor: Editor) => void;
+}> = [
+  { id: 'h1', label: '一级标题', hint: 'H1', icon: <Heading1 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
+  { id: 'h2', label: '二级标题', hint: 'H2', icon: <Heading2 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
+  { id: 'h3', label: '三级标题', hint: 'H3', icon: <Heading3 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
+  { id: 'bullet', label: '无序列表', hint: '•', icon: <List className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBulletList().run() },
+  { id: 'ordered', label: '有序列表', hint: '1.', icon: <ListOrdered className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleOrderedList().run() },
+  { id: 'quote', label: '引用', hint: '❝', icon: <Quote className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBlockquote().run() },
+  { id: 'code', label: '代码块', hint: '</>', icon: <Code className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleCodeBlock().run() },
+  { id: 'rule', label: '分隔线', hint: '——', icon: <Minus className="w-4 h-4" />, apply: (e) => e.chain().focus().setHorizontalRule().run() },
+  { id: 'wikilink', label: '双链链接', hint: '[[', icon: <Link2 className="w-4 h-4" />, apply: (e) => e.chain().focus().insertContent('[[').run() },
+];
 
 // ---------- [[双链]] 装饰 + 悬浮预览 ----------
 
@@ -459,6 +482,7 @@ function NoteEditor({
   const [newTag, setNewTag] = useState('');
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'dirty'>('saved');
   const [mention, setMention] = useState<{ query: string; top: number; left: number } | null>(null);
+  const [slash, setSlash] = useState<{ query: string; top: number; left: number; index: number } | null>(null);
   const [allTitles, setAllTitles] = useState<Array<{ id: string; title: string }>>([]);
   const [backlinks, setBacklinks] = useState<Backlink[]>([]);
   const [unlinked, setUnlinked] = useState<Backlink[]>([]);
@@ -739,6 +763,113 @@ function NoteEditor({
     };
   }, [editor]);
 
+  // 斜杠命令：检测光标前是否为「空格+ /词」
+  useEffect(() => {
+    if (!editor) return;
+    const checkSlash = () => {
+      const { state, view } = editor;
+      const pos = state.selection.from;
+      if (pos === 0) {
+        setSlash(null);
+        return;
+      }
+      const textBefore = state.doc.textBetween(Math.max(0, pos - 30), pos, '\n', '\0');
+      const m = textBefore.match(/(?:^|\s)\/([^\s/]*)$/);
+      if (!m || m[1].length > 20) {
+        setSlash(null);
+        return;
+      }
+      let top = 80;
+      let left = 24;
+      try {
+        const coords = view.coordsAtPos(pos - m[1].length - 1);
+        const container = editorContainerRef.current?.getBoundingClientRect();
+        if (container) {
+          top = coords.top - container.top;
+          left = coords.left - container.left;
+        }
+      } catch {
+        /* 回退默认位置 */
+      }
+      setSlash((prev) =>
+        prev && prev.query === m[1] && prev.top === top && prev.left === left
+          ? prev
+          : { query: m[1], top, left, index: 0 },
+      );
+    };
+    editor.on('update', checkSlash);
+    editor.on('selectionUpdate', checkSlash);
+    return () => {
+      editor.off('update', checkSlash);
+      editor.off('selectionUpdate', checkSlash);
+    };
+  }, [editor]);
+
+  const slashItems = useMemo(() => {
+    if (!slash) return [];
+    const q = slash.query.toLowerCase();
+    return SLASH_ITEMS.filter(
+      (i) => !q || i.label.toLowerCase().includes(q) || i.hint.toLowerCase().includes(q),
+    );
+  }, [slash]);
+
+  // 删除已输入的 "/词" 文本
+  const removeSlashText = (query: string) => {
+    if (!editor) return;
+    const pos = editor.state.selection.from;
+    const start = pos - query.length - 1;
+    if (start >= 0) {
+      editor.chain().focus().deleteRange({ from: start, to: pos }).run();
+    }
+  };
+
+  const applySlash = (index?: number) => {
+    if (!editor || !slash) return;
+    const item = slashItems[Math.min(index ?? slash.index, slashItems.length - 1)];
+    if (!item) return;
+    const pos = editor.state.selection.from;
+    const start = pos - slash.query.length - 1;
+    if (start >= 0) {
+      editor.chain().focus().deleteRange({ from: start, to: pos }).run();
+    }
+    item.apply(editor);
+    setSlash(null);
+  };
+
+  useEffect(() => {
+    if (!slash) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        removeSlashText(slash.query);
+        setSlash(null);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlash((s) => (s ? { ...s, index: Math.min(s.index + 1, slashItems.length - 1) } : s));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlash((s) => (s ? { ...s, index: Math.max(s.index - 1, 0) } : s));
+        return;
+      }
+      if (e.key === 'Enter' && slashItems.length > 0) {
+        e.preventDefault();
+        applySlash();
+        return;
+      }
+      if (e.key === 'Backspace' && slash.query.length === 0) {
+        setSlash(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, slash, slashItems]);
+
   const mentionCandidates = useMemo(() => {
     if (!mention) return [];
     const q = mention.query.trim().toLowerCase();
@@ -910,6 +1041,29 @@ function NoteEditor({
                 className="block w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-primary-50 truncate"
               >
                 {c.title}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 斜杠命令浮层 */}
+        {slash && slashItems.length > 0 && (
+          <div
+            className="absolute z-30 w-72 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
+            style={{ top: slash.top + 24, left: slash.left }}
+          >
+            {slashItems.map((item, i) => (
+              <button
+                key={item.id}
+                onMouseEnter={() => setSlash((s) => (s ? { ...s, index: i } : s))}
+                onClick={() => applySlash(i)}
+                className={`flex w-full items-center gap-2.5 text-left px-3 py-2 text-sm transition-colors ${
+                  i === slash.index ? 'bg-primary-50 text-primary-700' : 'text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <span className="text-gray-400">{item.icon}</span>
+                <span className="font-medium">{item.label}</span>
+                <span className="ml-auto text-xs text-gray-400">{item.hint}</span>
               </button>
             ))}
           </div>

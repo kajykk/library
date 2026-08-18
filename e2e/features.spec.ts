@@ -49,4 +49,25 @@ test.describe('功能扩展冒烟', () => {
     await expect(page.getByRole('heading', { name: '知识图谱' })).toBeVisible();
     await expect(page.getByText(/\d+ 节点 · \d+ 连接/)).toBeVisible({ timeout: 15_000 });
   });
+
+  test('阅读进度持久化', async ({ page, request }) => {
+    await configureBackend(page);
+    await cleanupBooks(request, 'E2E 测试书');
+    await page.goto('/library');
+    await page.locator('input[type="file"]').first().setInputFiles(
+      path.join(__dirname, 'fixtures', 'sample.epub'),
+    );
+    await expect(page.getByText('成功 1 个')).toBeVisible({ timeout: 30_000 });
+
+    // 打开阅读器翻到第二章
+    await page.goto('/library');
+    await page.getByRole('button', { name: '开始阅读' }).first().click();
+    await expect(page.getByRole('heading', { name: '第一章 开端' })).toBeVisible({ timeout: 30_000 });
+    await page.getByTitle('下一页').click();
+    await expect(page.getByRole('heading', { name: '第二章 深入' })).toBeVisible({ timeout: 10_000 });
+
+    // 返回书架：进度已持久化（2 章读完 → 100%）
+    await page.getByTitle('返回书架').click();
+    await expect(page.getByText('已读 100%')).toBeVisible({ timeout: 15_000 });
+  });
 });

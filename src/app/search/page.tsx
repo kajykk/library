@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search as SearchIcon, FileText, BookOpen, Loader2, X, Clock3 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { searchApi, SearchHit } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 
@@ -40,6 +41,7 @@ function highlightSnippet(snippet: string) {
 }
 
 export default function SearchPage() {
+  const router = useRouter();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -47,7 +49,14 @@ export default function SearchPage() {
   const [mode, setMode] = useState<'api' | 'local' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 键盘导航用的扁平结果（按分组顺序）
+  const flatHits = useMemo(
+    () => (hits ? TYPE_ORDER.flatMap((t) => hits.filter((h) => h.type === t)) : []),
+    [hits],
+  );
 
   useEffect(() => {
     if (typeof window !== 'undefined') setHistory(loadHistory());
@@ -100,6 +109,57 @@ export default function SearchPage() {
     };
   }, [query, typeFilter, runSearch]);
 
+  // 结果变化时重置选中
+  useEffect(() => {
+    setActiveIndex(-1);
+  }, [hits, query]);
+
+  // 选中项滚动进视口
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    document.getElementById(`search-hit-${activeIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
+  const openHit = (index: number) => {
+    const hit = flatHits[index];
+    if (!hit) return;
+    if (['note', 'article', 'webclip'].includes(hit.type)) {
+      router.push(`/notes?open=${hit.id}`);
+    } else {
+      router.push('/library');
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (flatHits.length > 0) {
+        setActiveIndex((i) => Math.min(i + 1, flatHits.length - 1));
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (flatHits.length > 0) {
+        setActiveIndex((i) => Math.max(i - 1, 0));
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      const target = activeIndex >= 0 ? activeIndex : 0;
+      if (flatHits[target]) {
+        e.preventDefault();
+        openHit(target);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      setQuery('');
+      setHits(null);
+      setActiveIndex(-1);
+    }
+  };
+
   return (
     <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <h1 className="text-xl font-bold text-gray-900 mb-4">全文检索</h1>
@@ -111,7 +171,8 @@ export default function SearchPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="输入关键词即时搜索书名、作者、笔记内容..."
+            onKeyDown={handleKeyDown}
+            placeholder="输入关键词即时搜索书名、作者、笔记内容...（↑↓ 选择、回车打开、Esc 清空）"
             className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
             autoFocus
           />
@@ -195,26 +256,34 @@ export default function SearchPage() {
                   {TYPE_LABELS[type] || type}（{group.length}）
                 </h2>
                 <div className="space-y-2">
-                  {group.map((hit) => (
-                    <Link
-                      key={hit.id}
-                      href={['note', 'article', 'webclip'].includes(hit.type) ? `/notes?open=${hit.id}` : '/library'}
-                      className="block bg-white rounded-lg border border-gray-200 p-4 hover:shadow-sm transition-shadow"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        {hit.type === 'book' || hit.type === 'pdf' ? (
-                          <BookOpen className="w-4 h-4 text-primary-500" />
-                        ) : (
-                          <FileText className="w-4 h-4 text-primary-500" />
-                        )}
-                        <h3 className="font-medium text-gray-900 truncate">{hit.title}</h3>
-                        <span className="ml-auto shrink-0 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-                          {TYPE_LABELS[hit.type] || hit.type}
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-500 line-clamp-2">{highlightSnippet(hit.snippet)}</p>
-                    </Link>
-                  ))}
+                  {group.map((hit) => {
+                    const flatIndex = flatHits.indexOf(hit);
+                    return (
+                      <Link
+                        key={hit.id}
+                        id={`search-hit-${flatIndex}`}
+                        href={['note', 'article', 'webclip'].includes(hit.type) ? `/notes?open=${hit.id}` : '/library'}
+                        className={`block bg-white rounded-lg border p-4 transition-shadow ${
+                          flatIndex === activeIndex
+                            ? 'border-primary-500 ring-2 ring-primary-500'
+                            : 'border-gray-200 hover:shadow-sm'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          {hit.type === 'book' || hit.type === 'pdf' ? (
+                            <BookOpen className="w-4 h-4 text-primary-500" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-primary-500" />
+                          )}
+                          <h3 className="font-medium text-gray-900 truncate">{hit.title}</h3>
+                          <span className="ml-auto shrink-0 text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                            {TYPE_LABELS[hit.type] || hit.type}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 line-clamp-2">{highlightSnippet(hit.snippet)}</p>
+                      </Link>
+                    );
+                  })}
                 </div>
               </section>
             );
