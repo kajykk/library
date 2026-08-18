@@ -85,7 +85,13 @@ def _epub_with_chapter_bytes(title: str = "正文书", chapter_text: str = "认�
 def test_health_no_auth(client):
     resp = client.get(f"{API}/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    # 自检项：数据库 / FTS 索引 / 数据目录 / 协作目录
+    assert body["checks"]["database"] == "ok"
+    assert body["checks"]["fulltext_index"] == "ok"
+    assert body["checks"]["data_dir"] == "ok"
+    assert body["checks"]["collab_dir"] == "ok"
 
 
 def test_requires_token(client):
@@ -1006,3 +1012,29 @@ def test_clip(client, auth_headers, monkeypatch):
     assert any(t["name"] == "方法论" for t in doc["tags"])
     hits = client.get(f"{API}/search", headers=auth_headers, params={"q": "无干扰"}).json()
     assert any(h["id"] == body["id"] for h in hits)
+
+
+def test_clip_url_ssrf_guard(client, auth_headers, monkeypatch):
+    # 默认拦截本机地址，防止 SSRF
+    blocked = client.post(
+        f"{API}/clip",
+        headers=auth_headers,
+        json={"url": "http://localhost:8111/api/health"},
+    )
+    assert blocked.status_code == 400
+    assert "Blocked" in blocked.text
+
+    # KB_ALLOW_LOCAL_CLIP=1 仅测试通道放行本机
+    import app.services.url_safety as url_safety
+
+    from app.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "allow_local_clip", True
+    )
+    ok = client.post(
+        f"{API}/clip",
+        headers=auth_headers,
+        json={"url": "http://127.0.0.1:1/health"},
+    )
+    assert ok.status_code in (201, 502)  # 放行后到达抓取阶段（连接失败或成功均可，取决于端口）

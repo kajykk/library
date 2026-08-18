@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,7 +79,58 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["system"])
     def health():
-        return {"status": "ok"}
+        """系统自检：数据库、FTS 索引、数据目录、协作库可写性（供启动探活与设置页状态卡）"""
+        from sqlalchemy import text
+
+        from .database import SessionLocal
+        from .services.search_index import FTS_TABLE
+
+        settings = get_settings()
+
+        result: dict[str, object] = {"status": "ok", "checks": {}}
+
+        # 数据库 + FTS 虚拟表
+        try:
+            db = SessionLocal()
+            try:
+                db.execute(text("SELECT 1"))
+                result["checks"]["database"] = "ok"
+                try:
+                    db.execute(text(f"SELECT rowid FROM {FTS_TABLE} LIMIT 1"))
+                    result["checks"]["fulltext_index"] = "ok"
+                except Exception:
+                    result["checks"]["fulltext_index"] = "missing"
+                    result["status"] = "degraded"
+            finally:
+                db.close()
+        except Exception as exc:
+            result["checks"]["database"] = f"error: {exc}"
+            result["status"] = "error"
+
+        # 数据目录可写
+        try:
+            data_dir = Path(settings.data_dir)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            probe = data_dir / ".health-probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            result["checks"]["data_dir"] = "ok"
+        except Exception as exc:
+            result["checks"]["data_dir"] = f"error: {exc}"
+            result["status"] = "error"
+
+        # 协作库可写（与主库同目录，y-websocket 使用）
+        try:
+            db_path = Path(settings.database_url.replace("sqlite:///", ""))
+            collab_probe = db_path.parent / f"{db_path.stem}.collab-probe"
+            collab_probe.write_text("ok", encoding="utf-8")
+            collab_probe.unlink(missing_ok=True)
+            result["checks"]["collab_dir"] = "ok"
+        except Exception as exc:
+            result["checks"]["collab_dir"] = f"error: {exc}"
+            result["status"] = "error"
+
+        return result
 
     return app
 

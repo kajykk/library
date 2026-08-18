@@ -13,6 +13,15 @@ interface StatisticsPanelProps {
   onClose: () => void;
 }
 
+/** 热力图格子颜色：按当日阅读分钟数分档 */
+function heatColor(minutes: number): string {
+  if (minutes <= 0) return 'bg-gray-100';
+  if (minutes < 10) return 'bg-primary-100';
+  if (minutes < 30) return 'bg-primary-300';
+  if (minutes < 60) return 'bg-primary-500';
+  return 'bg-primary-700';
+}
+
 export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
@@ -80,6 +89,24 @@ export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
           return acc;
         }, {} as Record<string, number>)
       );
+
+  // 阅读日历热力图：最近 365 天
+  const heatmapDays = apiStats
+    ? apiStats.heatmap
+    : (() => {
+        const map = new Map<string, number>();
+        records.forEach((r) => {
+          const d = new Date(r.startTime).toISOString().slice(0, 10);
+          map.set(d, (map.get(d) || 0) + (r.endTime - r.startTime) / 60000);
+        });
+        const days: Array<{ date: string; minutes: number }> = [];
+        const now = new Date();
+        for (let i = 364; i >= 0; i--) {
+          const d = new Date(now.getTime() - i * 86400000);
+          days.push({ date: d.toISOString().slice(0, 10), minutes: Math.round(map.get(d.toISOString().slice(0, 10)) || 0) });
+        }
+        return days;
+      })();
 
   const topTags = apiStats ? apiStats.top_tags : [];
 
@@ -213,6 +240,47 @@ export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
                 <span className="text-sm text-gray-500">{formatDuration(minutes)}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {heatmapDays.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">阅读日历（近一年）</h3>
+          <div className="flex gap-1.5">
+            <div className="flex flex-col gap-1.5 pr-1">
+              {['一', '三', '五', '日'].map((w) => (
+                <span key={w} className="text-[10px] text-gray-400 leading-[10px] h-[10px] flex items-center">
+                  {w}
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {Array.from({ length: Math.ceil(heatmapDays.length / 7) }, (_, week) => (
+                <div key={week} className="flex flex-col gap-1.5">
+                  {Array.from({ length: 7 }, (_, dow) => {
+                    const day = heatmapDays[week * 7 + dow];
+                    if (!day) return <span key={dow} className="w-[10px] h-[10px]" />;
+                    return (
+                      <span
+                        key={day.date}
+                        title={`${day.date}：${formatDuration(day.minutes)}`}
+                        className={`w-[10px] h-[10px] rounded-[2px] ${heatColor(day.minutes)}`}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 mt-2 text-[10px] text-gray-400">
+            <span>少</span>
+            <span className="w-[10px] h-[10px] rounded-[2px] bg-gray-100" />
+            <span className="w-[10px] h-[10px] rounded-[2px] bg-primary-100" />
+            <span className="w-[10px] h-[10px] rounded-[2px] bg-primary-300" />
+            <span className="w-[10px] h-[10px] rounded-[2px] bg-primary-500" />
+            <span className="w-[10px] h-[10px] rounded-[2px] bg-primary-700" />
+            <span>多</span>
           </div>
         </div>
       )}

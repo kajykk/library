@@ -49,6 +49,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
+export interface SystemHealth {
+  status: 'ok' | 'degraded' | 'error';
+  checks: Record<string, string>;
+}
+
 export async function checkHealth(): Promise<boolean> {
   try {
     const resp = await fetch(`${getApiBaseUrl()}/api/health`);
@@ -56,6 +61,12 @@ export async function checkHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function fetchSystemHealth(): Promise<SystemHealth> {
+  const resp = await fetch(`${getApiBaseUrl()}/api/health`);
+  if (!resp.ok) throw new Error(`健康检查失败：${resp.status}`);
+  return (await resp.json()) as SystemHealth;
 }
 
 // ---------- 类型 ----------
@@ -305,6 +316,7 @@ export interface StatsOut {
   completed: number;
   total_reading_minutes: number;
   recent_days: Array<{ date: string; minutes: number }>;
+  heatmap: Array<{ date: string; minutes: number }>;
   top_tags: Array<{ name: string; count: number }>;
 }
 

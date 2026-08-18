@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search as SearchIcon, FileText, BookOpen, Globe, CornerDownLeft } from 'lucide-react';
+import { Search as SearchIcon, FileText, BookOpen, Globe, CornerDownLeft, Loader2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { ApiDocument, listDocuments } from '@/lib/api/client';
+import { ApiDocument, listDocuments, clipUrl } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 
 interface PaletteItem {
@@ -20,6 +20,21 @@ const TYPE_LABELS: Record<string, string> = {
   article: '文章',
   webclip: '剪藏',
 };
+
+const CLIP_ITEM_ID = '__clip__';
+
+/** 输入 "剪藏 <URL>"（或 clip <URL>）时返回置顶的剪藏动作项 */
+function parseClipQuery(query: string): PaletteItem | null {
+  const m = query.trim().match(/^(剪藏|clip)\s+(.+)$/i);
+  if (!m) return null;
+  const url = m[2].trim();
+  const valid = /^https?:\/\//i.test(url);
+  return {
+    id: CLIP_ITEM_ID,
+    title: valid ? `剪藏网页：${url}` : '剪藏网页（输入 http(s):// 开头的 URL）',
+    type: 'webclip',
+  };
+}
 
 function fuzzyScore(query: string, target: string): number | null {
   const q = query.toLowerCase();
@@ -49,6 +64,7 @@ export default function CommandPalette() {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const [mode, setMode] = useState<'api' | 'local' | null>(null);
+  const [clipBusy, setClipBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const itemsQuery = useQuery({
@@ -88,16 +104,20 @@ export default function CommandPalette() {
   }, [open]);
 
   const results = useMemo(() => {
-    if (!query.trim()) return items.slice(0, 12);
-    const scored: Array<{ item: PaletteItem; score: number }> = [];
-    for (const item of items) {
-      const s = fuzzyScore(query.trim(), item.title);
-      if (s !== null) scored.push({ item, score: s });
-    }
-    return scored
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 12)
-      .map((s) => s.item);
+    const clip = parseClipQuery(query);
+    const normal = (() => {
+      if (!query.trim()) return items.slice(0, 12);
+      const scored: Array<{ item: PaletteItem; score: number }> = [];
+      for (const item of items) {
+        const s = fuzzyScore(query.trim(), item.title);
+        if (s !== null) scored.push({ item, score: s });
+      }
+      return scored
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 12)
+        .map((s) => s.item);
+    })();
+    return clip ? [clip, ...normal] : normal;
   }, [items, query]);
 
   useEffect(() => {
@@ -106,6 +126,22 @@ export default function CommandPalette() {
 
   const go = useCallback(
     (item: PaletteItem) => {
+      if (item.id === CLIP_ITEM_ID) {
+        const m = query.trim().match(/^(剪藏|clip)\s+(.+)$/i);
+        const url = m?.[2]?.trim();
+        if (!url || !/^https?:\/\//i.test(url) || clipBusy) return;
+        setClipBusy(true);
+        clipUrl(url)
+          .then((res) => {
+            setOpen(false);
+            router.push(`/notes?open=${res.id}`);
+          })
+          .catch((err) => {
+            alert(`剪藏失败：${(err as Error).message}`);
+          })
+          .finally(() => setClipBusy(false));
+        return;
+      }
       setOpen(false);
       if (['note', 'article', 'webclip'].includes(item.type)) {
         router.push(`/notes?open=${item.id}`);
@@ -113,7 +149,7 @@ export default function CommandPalette() {
         router.push('/library');
       }
     },
-    [router],
+    [router, query, clipBusy],
   );
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -143,9 +179,10 @@ export default function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="搜索并跳转到任意文档…"
+            placeholder="搜索文档；输入“剪藏 <URL>”抓取网页…"
             className="flex-1 py-3.5 text-sm outline-none placeholder:text-gray-400"
           />
+          {clipBusy && <Loader2 className="w-4 h-4 text-primary-500 animate-spin" />}
           <kbd className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-400">ESC</kbd>
         </div>
 
@@ -185,7 +222,7 @@ export default function CommandPalette() {
 
         <div className="flex items-center gap-3 px-4 py-2 border-t border-gray-100 text-[11px] text-gray-400">
           <span>↑↓ 选择</span>
-          <span>Enter 跳转</span>
+          <span>Enter 跳转 / 剪藏</span>
           <span className="ml-auto">Ctrl+K 打开/关闭</span>
         </div>
       </div>

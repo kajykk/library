@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
+from ..config import get_settings
+
 _BLOCKED_RANGES = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -43,11 +45,13 @@ def validate_url(url: str) -> str:
     if not parsed.hostname:
         raise HTTPException(status_code=400, detail="No hostname in URL")
 
-    for ip in _resolve_all_ips(parsed.hostname):
-        for net in _BLOCKED_RANGES:
-            if ip in net:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Blocked: internal/private address",
-                )
+    # KB_ALLOW_LOCAL_CLIP=1 仅用于测试/e2e：放行本机地址，便于对本地 fixture 服务做端到端验证
+    if not get_settings().allow_local_clip:
+        for ip in _resolve_all_ips(parsed.hostname):
+            for net in _BLOCKED_RANGES:
+                if ip in net:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Blocked: internal/private address",
+                    )
     return url

@@ -7,6 +7,8 @@ import {
   getApiToken,
   saveApiConfig,
   checkHealth,
+  fetchSystemHealth,
+  SystemHealth,
   migrateMeta,
   migrateFile,
   migrateCover,
@@ -20,6 +22,13 @@ import {
 import { getBooks, getCategories, exportData, getAllFileRecords, getAllCoverRecords, initDB } from '@/lib/db';
 import { resetModeCache } from '@/lib/dataSource';
 import { ArrowLeft, Settings2, Plug, DatabaseZap, CheckCircle2, XCircle, Loader2, Download, Upload, Globe, RefreshCw, Search } from 'lucide-react';
+
+const CHECK_LABELS: Record<string, string> = {
+  database: '数据库',
+  fulltext_index: '全文索引',
+  data_dir: '数据目录',
+  collab_dir: '协作库',
+};
 
 interface MigrationState {
   status: 'idle' | 'running' | 'done' | 'error';
@@ -42,6 +51,8 @@ export default function SettingsPage() {
   const [clipUrlInput, setClipUrlInput] = useState('');
   const [clipMsg, setClipMsg] = useState<string | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [healthChecking, setHealthChecking] = useState(false);
 
   useEffect(() => {
     setApiBase(getApiBaseUrl());
@@ -80,6 +91,21 @@ export default function SettingsPage() {
     setConnectionStatus('testing');
     const ok = await checkHealth();
     setConnectionStatus(ok ? 'ok' : 'fail');
+    if (ok) await runHealthCheck();
+  };
+
+  const runHealthCheck = async () => {
+    setHealthChecking(true);
+    try {
+      setSystemHealth(await fetchSystemHealth());
+    } catch (err) {
+      setSystemHealth({
+        status: 'error',
+        checks: { database: (err as Error).message || '无法连接' },
+      });
+    } finally {
+      setHealthChecking(false);
+    }
   };
 
   const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
@@ -263,6 +289,44 @@ export default function SettingsPage() {
               )}
             </div>
           </div>
+        </section>
+
+        {/* 系统状态 */}
+        <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="font-semibold text-gray-900">系统状态</h2>
+            <button
+              onClick={runHealthCheck}
+              disabled={healthChecking}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${healthChecking ? 'animate-spin' : ''}`} />
+              重新检测
+            </button>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">数据库、全文索引、数据目录与协作库自检</p>
+          {systemHealth === null ? (
+            <p className="text-sm text-gray-400">尚未检测。保存并测试连接后自动刷新。</p>
+          ) : (
+            <div className="space-y-2">
+              {Object.entries(systemHealth.checks).map(([key, value]) => (
+                <div key={key} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-600">{CHECK_LABELS[key] || key}</span>
+                  {value === 'ok' ? (
+                    <span className="flex items-center gap-1 text-green-600">
+                      <CheckCircle2 className="w-4 h-4" />
+                      正常
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-red-600">
+                      <XCircle className="w-4 h-4" />
+                      {value}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {/* 全文索引 */}

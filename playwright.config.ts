@@ -34,6 +34,8 @@ export default defineConfig({
         KB_API_TOKEN: 'e2e-token',
         KB_AUTO_CREATE_TABLES: '1',
         KB_CORS_ORIGINS: `http://localhost:${FRONTEND_PORT}`,
+        // 仅 e2e：允许剪藏本机地址（SSRF 防护默认开启）
+        KB_ALLOW_LOCAL_CLIP: '1',
       },
     },
     {

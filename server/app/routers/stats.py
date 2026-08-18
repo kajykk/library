@@ -1,7 +1,7 @@
-"""统计聚合：文档总量/类型分布、阅读进度、阅读时长、近期趋势、热门标签、作者聚合、健康面板"""
+"""统计聚合：文档总量/类型分布、阅读进度、阅读时长、近期趋势、阅读日历热力图、热门标签、作者聚合、健康面板"""
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -20,6 +20,11 @@ class DayStat(BaseModel):
     minutes: float
 
 
+class HeatmapDay(BaseModel):
+    date: str
+    minutes: float
+
+
 class TagStat(BaseModel):
     name: str
     count: int
@@ -32,7 +37,24 @@ class StatsOut(BaseModel):
     completed: int
     total_reading_minutes: float
     recent_days: list[DayStat]
+    heatmap: list[HeatmapDay]
     top_tags: list[TagStat]
+
+
+def _build_day_map(records: list[ReadingRecord]) -> dict[str, float]:
+    """按 UTC 日聚合阅读分钟数（跨 SQLite/PostgreSQL 一致）"""
+    day_map: dict[str, float] = {}
+    for record in records:
+        start_time = record.start_time
+        end_time = record.end_time
+        if isinstance(start_time, datetime) and isinstance(end_time, datetime):
+            date = start_time.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            minutes = max(0.0, (end_time - start_time).total_seconds() / 60)
+        else:
+            date = str(start_time)
+            minutes = 0.0
+        day_map[date] = day_map.get(date, 0.0) + minutes
+    return day_map
 
 
 @router.get("", response_model=StatsOut)
@@ -57,45 +79,23 @@ def get_stats(db: Session = Depends(get_db)):
         )
     ) or 0
 
-    dialect = db.get_bind().dialect.name
-    if dialect == "postgresql":
-        total_reading_minutes = db.scalar(
-            select(
-                func.coalesce(
-                    func.sum(func.extract("epoch", ReadingRecord.end_time - ReadingRecord.start_time) / 60.0),
-                    0.0,
-                )
-            )
-        ) or 0.0
-        recent_rows = db.execute(
-            select(
-                func.to_char(func.date_trunc("day", ReadingRecord.start_time), "YYYY-MM-DD"),
-                func.sum(func.extract("epoch", ReadingRecord.end_time - ReadingRecord.start_time) / 60.0),
-            )
-            .group_by(func.date_trunc("day", ReadingRecord.start_time))
-            .order_by(func.date_trunc("day", ReadingRecord.start_time).desc())
-            .limit(7)
-        ).all()
-        recent_days = [DayStat(date=date, minutes=round(float(minutes or 0.0), 1)) for date, minutes in recent_rows]
-    else:
-        records = list(db.scalars(select(ReadingRecord)))
-        total_reading_minutes = 0.0
-        day_map: dict[str, float] = {}
-        for record in records:
-            start_time = record.start_time
-            end_time = record.end_time
-            if isinstance(start_time, datetime) and isinstance(end_time, datetime):
-                date = start_time.astimezone(timezone.utc).strftime("%Y-%m-%d")
-                minutes = max(0.0, (end_time - start_time).total_seconds() / 60)
-            else:
-                date = str(start_time)
-                minutes = 0.0
-            total_reading_minutes += minutes
-            day_map[date] = day_map.get(date, 0.0) + minutes
-        recent_days = [
-            DayStat(date=date, minutes=round(minutes, 1))
-            for date, minutes in sorted(day_map.items(), key=lambda kv: kv[0], reverse=True)[:7]
-        ]
+    records = list(db.scalars(select(ReadingRecord)))
+    day_map = _build_day_map(records)
+    total_reading_minutes = sum(day_map.values())
+    recent_days = [
+        DayStat(date=date, minutes=round(minutes, 1))
+        for date, minutes in sorted(day_map.items(), key=lambda kv: kv[0], reverse=True)[:7]
+    ]
+
+    # 阅读日历热力图：最近 365 天（含零阅读日，前端直接渲染）
+    today = datetime.now(timezone.utc).date()
+    heatmap = [
+        HeatmapDay(
+            date=(today - timedelta(days=offset)).strftime("%Y-%m-%d"),
+            minutes=round(day_map.get((today - timedelta(days=offset)).strftime("%Y-%m-%d"), 0.0), 1),
+        )
+        for offset in range(364, -1, -1)
+    ]
 
     tag_rows = db.execute(
         select(Tag.name, func.count(DocumentTag.document_id).label("cnt"))
@@ -113,6 +113,7 @@ def get_stats(db: Session = Depends(get_db)):
         completed=completed,
         total_reading_minutes=round(float(total_reading_minutes), 1),
         recent_days=recent_days,
+        heatmap=heatmap,
         top_tags=top_tags,
     )
 

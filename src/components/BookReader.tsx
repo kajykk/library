@@ -555,14 +555,46 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   }, [scrollMode]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // 输入框/编辑器聚焦时不劫持按键（书内搜索、页码输入等）
+    const target = e.target as HTMLElement | null;
+    const isTyping =
+      !!target &&
+      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    if (e.key === 'Escape') {
+      // 逐层关闭浮层，最后才退出阅读器
+      if (showBookSearch) {
+        setShowBookSearch(false);
+      } else if (showChapterList) {
+        setShowChapterList(false);
+      } else if (showSidebar) {
+        setShowSidebar(false);
+      } else {
+        onClose();
+      }
+      return;
+    }
+    if (isTyping) return;
     if (e.key === 'ArrowLeft') {
       handlePageChange(currentPage - 1);
     } else if (e.key === 'ArrowRight') {
       handlePageChange(currentPage + 1);
-    } else if (e.key === 'Escape') {
-      onClose();
+    } else if (e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      toggleFullscreen();
+    } else if (e.key.toLowerCase() === 's' && isChapteredFormat(book.format)) {
+      e.preventDefault();
+      setShowBookSearch((v) => !v);
+      if (showBookSearch) setBookSearchQuery('');
     }
-  }, [currentPage, handlePageChange, onClose]);
+  }, [currentPage, handlePageChange, onClose, showBookSearch, showChapterList, showSidebar, book.format]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void document.documentElement.requestFullscreen?.();
+    }
+  }, []);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
@@ -791,6 +823,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
           
           {/* Page Navigation */}
           {!(isChapteredFormat(book.format) && scrollMode) && (
+            <>
             <div className="flex items-center justify-center gap-4 py-6 border-t border-gray-200">
               <button
                 onClick={() => handlePageChange(currentPage - 1)}
@@ -828,6 +861,10 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
                 <ChevronRight className="w-5 h-5" />
               </button>
             </div>
+            <p className="pb-2 text-center text-xs text-gray-300 select-none">
+              ← → 翻页 · F 全屏 · S 书内搜索 · Esc 关闭
+            </p>
+          </>
           )}
           
           {/* Progress Bar */}

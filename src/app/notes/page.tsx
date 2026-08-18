@@ -39,6 +39,7 @@ import {
   Minus,
   Heading1,
   Heading3,
+  Search,
 } from 'lucide-react';
 import { ApiDocument, listDocuments, patchDocument, createDocument, deleteDocument, setDocumentTags, getBacklinks, getUnlinkedMentions, createLink, getVersions, getVersion, restoreVersion, searchAnnotations, getCollabWsUrl, getApiToken, downloadMarkdownExport, AnnotationHit, DocumentVersionSummary, DocumentVersionDetail, Backlink, DocumentPatch } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
@@ -168,8 +169,20 @@ function NotesPageInner() {
   const notes = notesQuery.data ?? [];
   const isLoading = notesQuery.isLoading;
 
+  // 列表本地过滤：标题/标签
+  const [listSearch, setListSearch] = useState('');
+  const visibleNotes = useMemo(() => {
+    const q = listSearch.trim().toLowerCase();
+    if (!q) return notes;
+    return notes.filter(
+      (n) =>
+        (n.title || '').toLowerCase().includes(q) ||
+        (n.tags || []).some((t) => (t.name || '').toLowerCase().includes(q)),
+    );
+  }, [notes, listSearch]);
+
   const rowVirtualizer = useVirtualizer({
-    count: listType === 'note' ? notes.length : 0,
+    count: listType === 'note' ? visibleNotes.length : 0,
     getScrollElement: () => listParentRef.current,
     estimateSize: () => 96,
     overscan: 6,
@@ -187,7 +200,11 @@ function NotesPageInner() {
     if (openId && mode === 'api') {
       listDocuments({ q: '' })
         .then((docs) => {
-          if (docs.some((d) => d.id === openId)) setEditingId(openId);
+          const target = docs.find((d) => d.id === openId);
+          if (!target) return;
+          // 剪藏/文章类文档在“剪藏”列表下渲染
+          if (target.type === 'webclip' || target.type === 'article') setListType('webclip');
+          setEditingId(openId);
         })
         .catch(() => undefined);
     }
@@ -360,16 +377,41 @@ function NotesPageInner() {
           </p>
         </div>
       ) : listType === 'note' ? (
-        <div
-          ref={listParentRef}
-          className="h-[calc(100vh-220px)] overflow-y-auto"
-        >
+        <div>
+          <div className="relative mb-3">
+            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder="搜索笔记标题或标签…"
+              className="w-full pl-9 pr-9 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary-100 placeholder:text-gray-400"
+            />
+            {listSearch && (
+              <button
+                onClick={() => setListSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title="清空搜索"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          {visibleNotes.length === 0 ? (
+            <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-400">
+              没有匹配“{listSearch.trim()}”的笔记
+            </div>
+          ) : (
           <div
-            className="relative w-full"
-            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            ref={listParentRef}
+            className="h-[calc(100vh-260px)] overflow-y-auto"
           >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const note = notes[virtualRow.index];
+            <div
+              className="relative w-full"
+              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const note = visibleNotes[virtualRow.index];
               return (
                 <div
                   key={note.id}
@@ -414,6 +456,8 @@ function NotesPageInner() {
               );
             })}
           </div>
+        </div>
+          )}
         </div>
       ) : (
         <div className="space-y-2">
@@ -498,6 +542,8 @@ function NoteEditor({
   const contentRef = useRef(note.content || '');
   const titleRef = useRef(note.title);
   const tagsRef = useRef(tags);
+  // 最近一次已落库的标签集合：增删都按与它的差异决定是否提交（避免删回初始值被跳过）
+  const savedTagsRef = useRef<string[]>(note.tags.map((t) => t.name));
   const editorContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -602,8 +648,9 @@ function NoteEditor({
       try {
         const patch: DocumentPatch = { title: titleRef.current || '无标题笔记', content: contentRef.current };
         await patchDocument(note.id, patch);
-        if (tagsRef.current !== note.tags.map((t) => t.name)) {
+        if (JSON.stringify(tagsRef.current) !== JSON.stringify(savedTagsRef.current)) {
           await setDocumentTags(note.id, tagsRef.current);
+          savedTagsRef.current = [...tagsRef.current];
         }
         setSaveState('saved');
       } catch (err) {
