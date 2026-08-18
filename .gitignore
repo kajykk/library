@@ -31,4 +31,12 @@ __pycache__/
 server/.env
 server/*.db
 server/data/
+server/e2e-*/
 .venv/
+
+# playwright
+node_modules/.cache/
+test-results/
+playwright-report/
+e2e/fixtures/*.epub
+e2e/fixtures/*.md

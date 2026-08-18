@@ -37,7 +37,7 @@ import {
   WifiOff,
   Users,
 } from 'lucide-react';
-import { ApiDocument, listDocuments, patchDocument, createDocument, deleteDocument, setDocumentTags, getBacklinks, getUnlinkedMentions, createLink, getVersions, getVersion, restoreVersion, searchAnnotations, getCollabWsUrl, downloadMarkdownExport, AnnotationHit, DocumentVersionSummary, DocumentVersionDetail, Backlink, DocumentPatch } from '@/lib/api/client';
+import { ApiDocument, listDocuments, patchDocument, createDocument, deleteDocument, setDocumentTags, getBacklinks, getUnlinkedMentions, createLink, getVersions, getVersion, restoreVersion, searchAnnotations, getCollabWsUrl, getApiToken, downloadMarkdownExport, AnnotationHit, DocumentVersionSummary, DocumentVersionDetail, Backlink, DocumentPatch } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 
 function highlightSnippet(snippet: string) {
@@ -248,6 +248,8 @@ function NotesPageInner() {
           onBack={() => {
             setEditingId(null);
             refetchNotes();
+            // 等卸载时补发的保存落库后再刷一次列表
+            setTimeout(() => refetchNotes(), 1200);
           }}
           onDelete={() => handleDelete(editingId)}
           onOpenNote={(id) => setEditingId(id)}
@@ -595,6 +597,7 @@ function NoteEditor({
     const ydoc = new Y.Doc();
     const provider = new WebsocketProvider(getCollabWsUrl(note.id), `doc-${note.id}`, ydoc, {
       connect: true,
+      params: { token: getApiToken() },
     });
     collabRef.current = { ydoc, provider, seeded: false };
   }
@@ -753,8 +756,13 @@ function NoteEditor({
   useEffect(() => {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      // 卸载时若还有未落盘的修改，补发一次保存，避免快速返回丢标题/正文
+      patchDocument(note.id, {
+        title: titleRef.current || '无标题笔记',
+        content: contentRef.current,
+      }).catch((err) => console.error('卸载保存失败:', err));
     };
-  }, []);
+  }, [note.id]);
 
   const updateTitle = (value: string) => {
     setTitle(value);

@@ -466,8 +466,8 @@ export async function downloadMarkdownExport(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-export function getCollabWsUrl(docId: string): string {
-  return `${getApiBaseUrl().replace(/^http/, 'ws')}/ws/collab/doc-${docId}?token=${encodeURIComponent(getApiToken())}`;
+export function getCollabWsUrl(_docId: string): string {
+  return `${getApiBaseUrl().replace(/^http/, 'ws')}/ws/collab`;
 }
 
 export interface ClipResult {
