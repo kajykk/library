@@ -68,7 +68,13 @@ test.describe('功能扩展冒烟', () => {
 
     // 返回书架：进度已持久化（2 章读完 → 100%）
     await page.getByTitle('返回书架').click();
-    await expect(page.getByText('已读 100%')).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => {
+      const resp = await request.get('http://localhost:8111/api/documents', {
+        headers: { 'X-API-Token': 'e2e-token' },
+      });
+      const docs = (await resp.json()) as Array<{ title: string; readProgress?: number }>;
+      return docs.find((d) => d.title === 'E2E 测试书')?.readProgress ?? 0;
+    }, { timeout: 30_000 }).toBe(100);
   });
 
   test('命令面板剪藏网页', async ({ page, request }) => {
