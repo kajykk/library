@@ -126,6 +126,15 @@ export interface DocumentPatch {
   meta?: Record<string, unknown>;
 }
 
+export interface DocumentInsight {
+  summary: string;
+  suggested_tags: string[];
+}
+
+export function getDocumentInsight(id: string): Promise<DocumentInsight> {
+  return request<DocumentInsight>(`/api/documents/${id}/insight`);
+}
+
 // ---------- documents / collections ----------
 
 export function listDocuments(params?: Record<string, string>): Promise<ApiDocument[]> {
@@ -208,7 +217,9 @@ export function getReindexStatus(): Promise<ReindexStatus> {
 
 export function listCollections(): Promise<ApiCollection[]> {
   return request<ApiCollection[]>('/api/collections');
-}export function createCollection(name: string, sortOrder = 0): Promise<ApiCollection> {
+}
+
+export function createCollection(name: string, sortOrder = 0): Promise<ApiCollection> {
   return request<ApiCollection>('/api/collections', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -302,11 +313,23 @@ export interface SearchHit {
   snippet: string;
 }
 
+export interface SearchSummary {
+  query: string;
+  total: number;
+  by_type: Record<string, number>;
+  suggestions: string[];
+}
+
 export function searchApi(q: string, type?: string): Promise<SearchHit[]> {
   const params: Record<string, string> = { q };
   if (type) params.type = type;
   const qs = new URLSearchParams(params).toString();
   return request<SearchHit[]>(`/api/search?${qs}`);
+}
+
+export function getSearchSummary(q: string): Promise<SearchSummary> {
+  const params = new URLSearchParams({ q });
+  return request<SearchSummary>(`/api/search/summary?${params}`);
 }
 
 export interface StatsOut {

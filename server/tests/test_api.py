@@ -51,7 +51,11 @@ def _epub_bytes(title: str = "EPUB 测试书", author: str = "张三") -> bytes:
     return buf.getvalue()
 
 
-def _epub_with_chapter_bytes(title: str = "正文书", chapter_text: str = "认知负荷理论正文内容") -> bytes:
+def _epub_with_chapter_bytes(
+    title: str = "正文书",
+    chapter_text: str = "认知负荷理论正文内容",
+    xml_decl: str = '<?xml version="1.0"?>',
+) -> bytes:
     opf = """<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
   <!-- {marker} -->
@@ -74,7 +78,7 @@ def _epub_with_chapter_bytes(title: str = "正文书", chapter_text: str = "认�
         zf.writestr("OEBPS/content.opf", opf)
         zf.writestr(
             "OEBPS/chapter1.xhtml",
-            f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
+            f'{xml_decl}<html xmlns="http://www.w3.org/1999/xhtml">'
             f"<body><h1>第一章</h1><p>{chapter_text}</p></body></html>",
         )
     return buf.getvalue()
@@ -152,6 +156,185 @@ def test_upload_epub_metadata_and_cover(client, auth_headers):
     cover = client.get(f"{API}/documents/{doc['id']}/cover", headers=auth_headers)
     assert cover.status_code == 200
     assert cover.content.startswith(b"\xff\xd8")
+
+
+# ---------- 导入自动分类（标题 → 正文词频 → OCR 后台） ----------
+
+def _ensure_collection(client, auth_headers, name):
+    r = client.post(f"{API}/collections", headers=auth_headers, json={"name": name})
+    if r.status_code == 201:
+        return r.json()["id"]
+    if r.status_code == 409:
+        return next(c["id"] for c in client.get(f"{API}/collections", headers=auth_headers).json() if c["name"] == name)
+    raise AssertionError(f"create collection failed: {r.status_code}")
+
+
+def test_upload_auto_classify_title_and_content(client, auth_headers):
+    psy_id = _ensure_collection(client, auth_headers, "心理学")
+
+    # 第一层：标题关键词命中
+    name, fh = _txt_file("心理学入门笔记.txt")
+    r1 = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (name, fh, "text/plain")}
+    )
+    assert r1.status_code == 201, r1.text
+    assert r1.json()["collection_id"] == psy_id
+
+    # 第二层：标题无关键词、正文词频命中（≥阈值）
+    body = "情绪管理 焦虑 正念 冥想 认知行为 潜意识 " * 10
+    name2, fh2 = _txt_file("无名之书.txt", body)
+    r2 = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (name2, fh2, "text/plain")}
+    )
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["collection_id"] == psy_id
+
+    # 两层都未命中 → 不归类
+    name3, fh3 = _txt_file("无主题之书.txt", "这是完全没有主题特征词汇的普通内容 " * 5)
+    r3 = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (name3, fh3, "text/plain")}
+    )
+    assert r3.status_code == 201, r3.text
+    assert r3.json()["collection_id"] is None
+
+
+def test_upload_auto_classify_ocr_background(client, auth_headers, monkeypatch):
+    from pypdf import PdfWriter
+
+    import app.routers.documents as docmod
+    import app.services.ocr_classify as ocr_mod
+
+    psy_id = _ensure_collection(client, auth_headers, "心理学")
+
+    monkeypatch.setattr(docmod.settings, "auto_classify_ocr", True)
+    monkeypatch.setattr(
+        ocr_mod, "ocr_book_text",
+        lambda path, fmt: "情绪 焦虑 正念 冥想 认知行为 潜意识 心理 人格 " * 30,
+    )
+
+    def _blank_pdf(marker: str):
+        w = PdfWriter()
+        w.add_blank_page(width=200, height=200)
+        w.add_metadata({"/Title": marker})
+        buf = io.BytesIO()
+        w.write(buf)
+        return buf.getvalue()
+
+    # 扫描件（无文本层）→ 后台 OCR 归类
+    r = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("扫描版.pdf", io.BytesIO(_blank_pdf("scan-1")), "application/pdf")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["collection_id"] is None  # 响应先返回，后台任务随后写入
+    after = client.get(f"{API}/documents/{r.json()['id']}", headers=auth_headers).json()
+    assert after["collection_id"] == psy_id
+
+    # OCR 文本无主题特征 → 保持未归类
+    monkeypatch.setattr(ocr_mod, "ocr_book_text", lambda path, fmt: "仅有零散图文没有主题词汇 ")
+    r2 = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("扫描版2.pdf", io.BytesIO(_blank_pdf("scan-2")), "application/pdf")},
+    )
+    assert r2.status_code == 201, r2.text
+    after2 = client.get(f"{API}/documents/{r2.json()['id']}", headers=auth_headers).json()
+    assert after2["collection_id"] is None
+
+
+def test_epub_xml_encoding_declaration_extraction(client, auth_headers):
+    # xhtml 带 <?xml encoding?> 声明时 lxml 拒绝 str 输入，必须传 bytes 提取
+    buf = _epub_with_chapter_bytes(
+        "带编码声明书", "海德格尔的存在主义与形而上学思想", '<?xml version="1.0" encoding="utf-8"?>'
+    )
+    r = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("带编码声明书.epub", io.BytesIO(buf), "application/epub+zip")},
+    )
+    assert r.status_code == 201, r.text
+    got = client.get(f"{API}/documents/{r.json()['id']}", headers=auth_headers).json()
+    assert "海德格尔" in (got.get("content") or "")
+
+
+def test_auto_classify_series_name_no_false_positive(client, auth_headers):
+    # 书名含"人文与社会译丛"（丛书名）不应因"社会"一词误入经济政治
+    name, fh = _txt_file("技术与时间（修订合卷本）（人文与社会译丛）.txt", "无主题的普通内容文字 " * 5)
+    r = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (name, fh, "text/plain")}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["collection_id"] is None
+
+
+def test_auto_classify_philosophy_content(client, auth_headers):
+    # 正文主题词频命中 → 归入哲学
+    phi_id = _ensure_collection(client, auth_headers, "哲学")
+    buf = _epub_with_chapter_bytes(
+        "技术与时间（人文与社会译丛）", "存在主义 形而上学 海德格尔 哲学 思想 自由 " * 10
+    )
+    r = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("哲学书.epub", io.BytesIO(buf), "application/epub+zip")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["collection_id"] == phi_id
+
+
+def test_upload_mobi_auto_classify(client, auth_headers, monkeypatch):
+    # mobi 属于 TEXT_FORMATS：解包出正文后走正文词频分类
+    lit_id = _ensure_collection(client, auth_headers, "文学小说")
+
+    import app.services.content_extract as ce
+
+    monkeypatch.setattr(
+        ce, "_extract_mobi",
+        lambda path: "<html><body>陀思妥耶夫斯基的小说 小说 小说 小说 文学 " * 20 + "</body></html>",
+    )
+    r = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("赌徒.mobi", io.BytesIO(b"\x00fake-mobi"), "application/x-mobipocket-ebook")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["format"] == "mobi"
+    assert r.json()["collection_id"] == lit_id
+    got = client.get(f"{API}/documents/{r.json()['id']}", headers=auth_headers).json()
+    assert "陀思妥耶夫斯基" in (got.get("content") or "")
+
+
+def test_upload_azw3_extract_and_classify(client, auth_headers, monkeypatch):
+    # azw3(KF8) 必须走 _extract_mobi（解出的是 EPUB 容器），而非二进制直读
+    sci_id = _ensure_collection(client, auth_headers, "科学")
+
+    import app.services.content_extract as ce
+
+    monkeypatch.setattr(
+        ce, "_extract_mobi",
+        lambda path: "<html><body>量子宇宙 宇宙 宇宙 宇宙 物理学 物理 " * 20 + "</body></html>",
+    )
+    r = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("无中生有的宇宙.azw3", io.BytesIO(b"\x00fake-azw3"), "application/vnd.amazon.ebook")},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["format"] == "azw3"
+    assert r.json()["collection_id"] == sci_id
+    got = client.get(f"{API}/documents/{r.json()['id']}", headers=auth_headers).json()
+    assert "量子宇宙" in (got.get("content") or "")
+
+
+def test_auto_classify_content_margin_guard(client, auth_headers):
+    # 最高分与次高分接近（如小说里满是对话/情绪词）→ 拒绝归类，不强行猜测
+    name, fh = _txt_file("界限之书.txt", "小说 说话 情绪 小说 聊天 心理 小说 人格 小说 " * 10)
+    r = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (name, fh, "text/plain")}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["collection_id"] is None
 
 
 # ---------- 笔记类文档 / 标签 / 检索 ----------
@@ -987,16 +1170,37 @@ def test_clip(client, auth_headers, monkeypatch):
     </article><footer>页脚</footer></body></html>
     """
 
-    class FakeResp:
-        status_code = 200
-        text = fake_html
+    import contextlib
+
+    class FakeStreamResp:
+        charset_encoding = "utf-8"
+        headers = {}
+        url = "https://example.com/deep-work"
+
+        def __init__(self):
+            self._body = fake_html.encode("utf-8")
+
+        @property
+        def status_code(self):
+            return 200
+
+        @property
+        def is_redirect(self):
+            return False
 
         def raise_for_status(self):
             return None
 
+        def iter_bytes(self):
+            yield self._body
+
     import app.routers.clip as clip_module
 
-    monkeypatch.setattr(clip_module.httpx, "get", lambda *a, **kw: FakeResp())
+    @contextlib.contextmanager
+    def fake_stream(method, url, **kwargs):
+        yield FakeStreamResp()
+
+    monkeypatch.setattr(clip_module.httpx, "stream", fake_stream)
 
     result = client.post(
         f"{API}/clip", headers=auth_headers, json={"url": "https://example.com/deep-work", "tags": ["方法论"]}
@@ -1038,3 +1242,168 @@ def test_clip_url_ssrf_guard(client, auth_headers, monkeypatch):
         json={"url": "http://127.0.0.1:1/health"},
     )
     assert ok.status_code in (201, 502)  # 放行后到达抓取阶段（连接失败或成功均可，取决于端口）
+
+# ---------- 文档洞察（幽灵端点落地） ----------
+
+def test_document_insight(client, auth_headers):
+    note = client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={
+            "type": "note",
+            "title": "洞察测试笔记",
+            "content": (
+                "机器学习是人工智能的核心方向。机器学习模型需要大量数据训练。"
+                "深度学习是机器学习的一个重要分支。深度学习显著推动了图像识别进步。"
+                "强化学习被广泛用于序贯决策问题。机器学习的应用范围日益扩大。"
+            ),
+        },
+    ).json()
+    resp = client.get(f"{API}/documents/{note['id']}/insight", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"]
+    assert "机器学习" in body["summary"]
+    assert isinstance(body["suggested_tags"], list)
+    assert any("学习" in t for t in body["suggested_tags"])
+
+    missing = client.get(f"{API}/documents/{uuid.uuid4()}/insight", headers=auth_headers)
+    assert missing.status_code == 404
+
+
+def test_document_insight_empty_content(client, auth_headers):
+    note = client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": f"zzemptyinsight{_COUNTER[0]}", "content": ""},
+    ).json()
+    body = client.get(f"{API}/documents/{note['id']}/insight", headers=auth_headers).json()
+    # 正文与描述均为空 → 摘要为空；标签仅可能来自纯 ASCII 标题，允许为空或非空列表
+    assert body["summary"] == ""
+    assert isinstance(body["suggested_tags"], list)
+
+
+# ---------- 搜索摘要（幽灵端点落地） ----------
+
+def test_search_summary_endpoint(client, auth_headers):
+    marker = f"zzqxsummary{_COUNTER[0]}{_unique_marker().replace(' ', '').replace('#', '')}"
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={
+            "type": "note",
+            "title": f"摘要统计笔记 {marker}",
+            "content": f"包含独特标记 {marker} 的正文，讨论认知负荷与工作记忆的关系。",
+        },
+    )
+    resp = client.get(f"{API}/search/summary", headers=auth_headers, params={"q": marker})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert marker in body["query"]
+    assert body["total"] >= 1
+    assert body["by_type"].get("note", 0) >= 1
+    assert isinstance(body["suggestions"], list)
+
+    # 短词走 ILIKE 兜底路径同样可用
+    resp2 = client.get(f"{API}/search/summary", headers=auth_headers, params={"q": "摘要"})
+    assert resp2.status_code == 200
+    assert resp2.json()["total"] >= 1
+
+
+# ---------- 列表轻量化 + 分页（include_content/limit/offset） ----------
+
+def test_list_documents_lightweight_and_pagination(client, auth_headers):
+    marker = f"轻量列表 {_unique_marker()}"
+    created = []
+    for i in range(3):
+        d = client.post(
+            f"{API}/documents",
+            headers=auth_headers,
+            json={
+                "type": "note",
+                "title": f"{marker} 第{i}篇",
+                "content": "这是一段用于截断验证的较长正文内容。" * 30 + f"结尾编号{i}",
+            },
+        ).json()
+        created.append(d)
+
+    listed = client.get(
+        f"{API}/documents",
+        headers=auth_headers,
+        params={"q": marker, "limit": "2", "offset": "0"},
+    ).json()
+    assert len(listed) == 2
+    # 默认轻量模式：content 为截断摘要（≤201 字符且带省略号）
+    for item in listed:
+        assert len(item["content"]) <= 201
+        assert item["content"].endswith("…")
+
+    # offset 翻页
+    page2 = client.get(
+        f"{API}/documents",
+        headers=auth_headers,
+        params={"q": marker, "limit": "2", "offset": "2"},
+    ).json()
+    assert len(page2) == 1
+
+    # include_content=true 时返回全文（向后兼容）
+    full = client.get(
+        f"{API}/documents",
+        headers=auth_headers,
+        params={"q": marker, "include_content": "true"},
+    ).json()
+    assert any("结尾编号0" in d["content"] for d in full)
+
+    # detail 接口始终返回全文（向后兼容）
+    detail = client.get(f"{API}/documents/{created[0]['id']}", headers=auth_headers).json()
+    assert "结尾编号0" in detail["content"]
+
+
+# ---------- 上传白名单 / 文件下载响应头 / 备份大小上限 ----------
+
+def test_upload_rejects_disallowed_extension(client, auth_headers):
+    resp = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": ("evil.exe", io.BytesIO(b"MZ" + b"\x00" * 32), "application/octet-stream")},
+    )
+    assert resp.status_code == 400
+    assert "Unsupported file format" in resp.text
+
+
+def test_document_file_download_security_headers(client, auth_headers):
+    name, fh = _txt_file("响应头测试书.txt")
+    doc = client.post(
+        f"{API}/documents/upload",
+        headers=auth_headers,
+        files={"file": (name, fh, "text/plain")},
+    ).json()
+
+    full_resp = client.get(f"{API}/documents/{doc['id']}/file", headers=auth_headers)
+    assert full_resp.status_code == 200
+    assert full_resp.headers["x-content-type-options"] == "nosniff"
+    assert full_resp.headers["content-disposition"].startswith("attachment")
+
+    range_resp = client.get(
+        f"{API}/documents/{doc['id']}/file",
+        headers={**auth_headers, "Range": "bytes=0-3"},
+    )
+    assert range_resp.status_code == 206
+    assert range_resp.headers["x-content-type-options"] == "nosniff"
+    assert range_resp.headers["content-disposition"].startswith("attachment")
+
+
+def test_backup_restore_size_limit(client, auth_headers, monkeypatch):
+    from app.config import get_settings
+
+    settings_obj = get_settings()
+    monkeypatch.setattr(settings_obj, "upload_max_size_mb", 1)
+
+    oversized = b"PK\x03\x04" + b"x" * (1024 * 1024 + 128)
+    resp = client.post(
+        f"{API}/backup/restore",
+        headers=auth_headers,
+        files={"file": ("backup.zip", io.BytesIO(oversized), "application/zip")},
+    )
+    assert resp.status_code == 413
+    assert "upload limit" in resp.text

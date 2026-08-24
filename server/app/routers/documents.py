@@ -5,13 +5,25 @@ import uuid
 from datetime import timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..database import get_db
+from ..config import get_settings
+from ..database import SessionLocal, get_db
 from ..middleware.rate_limit import enforce_rate_limit
 from ..models import Collection, Document, DocumentTag, DocumentVersion, Link, Tag, utcnow
 from ..schemas import (
@@ -22,9 +34,18 @@ from ..schemas import (
     DocumentVersionSummary,
     TagsSet,
 )
-from ..services import auto_classify, content_extract, file_storage, metadata_extract, reindex_job
+from ..services import (
+    auto_classify,
+    content_extract,
+    file_storage,
+    metadata_extract,
+    ocr_classify,
+    reindex_job,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+settings = get_settings()
 
 MIME_BY_FORMAT = {
     "epub": "application/epub+zip",
@@ -37,7 +58,28 @@ MIME_BY_FORMAT = {
     "html": "text/html; charset=utf-8",
 }
 
+# 上传格式白名单：拒绝可执行/未知扩展名，防止任意文件落盘与浏览器内容嗅探
+UPLOAD_FORMAT_WHITELIST = {"epub", "pdf", "mobi", "azw", "azw3", "txt", "md"}
+
 RANGE_PATTERN = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def file_download_headers(doc: Document, extra: dict | None = None) -> dict:
+    """文件下载响应安全头：强制 attachment 下载 + 禁止 MIME 嗅探"""
+    from urllib.parse import quote
+
+    ext = doc.format or ""
+    raw_name = f"{doc.title or 'document'}{'.' + ext if ext else ''}"
+    ascii_fallback = (
+        raw_name.encode("ascii", "ignore").decode("ascii").replace('"', "") or "document"
+    )
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(raw_name)}",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
 
 # [[标题]] 双链语法（Obsidian 风格）
 MENTION_PATTERN = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
@@ -72,6 +114,69 @@ class Backlink(BaseModel):
     snippet: str = ""
 
 
+class DocumentInsight(BaseModel):
+    summary: str
+    suggested_tags: list[str]
+
+
+# ---------- 文档洞察：词频关键词 + 一句话摘要 ----------
+
+_LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]+")
+_CJK_BIGRAM_RE = re.compile(r"[\u4e00-\u9fff]")
+
+_KEYWORD_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "are", "was", "were",
+    "have", "has", "had", "not", "but", "you", "your", "its", "their", "they",
+    "them", "our", "can", "will", "would", "should", "could", "into", "about",
+    "these", "those", "been", "being", "does", "doing",
+    "这些", "那些", "我们", "你们", "他们", "一个", "这个", "那个", "以及",
+    "但是", "然后", "因此", "所以", "如果", "虽然", "可以", "没有", "就是",
+    "还有", "进行", "通过", "对于", "关于", "出现", "或者", "并且",
+}
+
+_SENTENCE_SPLIT_RE = re.compile(r"[。！？!?；;\n]+")
+
+
+def extract_keywords(text: str, top_n: int = 5) -> list[str]:
+    """极简关键词提取：拉丁词 + 中文 2 字滑窗词频统计（无外部依赖）"""
+    counts: dict[str, int] = {}
+    for word in _LATIN_WORD_RE.findall(text):
+        w = word.lower()
+        counts[w] = counts.get(w, 0) + 1
+    cjk_runs = re.findall(r"[\u4e00-\u9fff]+", text)
+    for run in cjk_runs:
+        for i in range(len(run) - 1):
+            bigram = run[i : i + 2]
+            counts[bigram] = counts.get(bigram, 0) + 1
+    filtered = [
+        (w, c)
+        for w, c in counts.items()
+        if w not in _KEYWORD_STOPWORDS and len(w) >= 2 and not w.isdigit()
+    ]
+    # 中文滑窗会互相重叠：同源 bigram 只保留频次最高者附近即可，简单按频次排序去重输出
+    filtered.sort(key=lambda wc: (-wc[1], wc[0]))
+    picked: list[str] = []
+    for w, _c in filtered:
+        if any(w in p or p in w for p in picked):
+            continue
+        picked.append(w)
+        if len(picked) >= top_n:
+            break
+    return picked
+
+
+def one_line_summary(text: str, max_chars: int = 100) -> str:
+    """取第一句非空句子作为一句话摘要，过长截断"""
+    plain = re.sub(r"\s+", " ", text or "").strip()
+    if not plain:
+        return ""
+    for part in _SENTENCE_SPLIT_RE.split(plain):
+        part = part.strip()
+        if len(part) >= 8:
+            return part[:max_chars] + ("…" if len(part) > max_chars else "")
+    return plain[:max_chars] + ("…" if len(plain) > max_chars else "")
+
+
 def _context_snippet(content: str, keyword: str, width: int = 60) -> str:
     if not content:
         return ""
@@ -101,6 +206,17 @@ def get_doc_or_404(db: Session, doc_id: uuid.UUID, include_deleted: bool = False
     return doc
 
 
+SUMMARY_PREVIEW_CHARS = 200
+
+
+def summarize_content(content: str | None, limit: int = SUMMARY_PREVIEW_CHARS) -> str:
+    """列表场景的正文摘要：压平空白后截断，避免大书库一次性传输全文"""
+    plain = re.sub(r"\s+", " ", content or "").strip()
+    if len(plain) <= limit:
+        return plain
+    return plain[:limit] + "…"
+
+
 @router.get("", response_model=list[DocumentOut])
 def list_documents(
     type: str | None = None,
@@ -108,6 +224,9 @@ def list_documents(
     tag: str | None = None,
     q: str | None = None,
     include_deleted: bool = False,
+    include_content: bool = False,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     stmt = select(Document).options(selectinload(Document.tags)).where(
@@ -131,8 +250,15 @@ def list_documents(
                 Document.content.ilike(like),
             )
         )
-    stmt = stmt.order_by(Document.created_at.desc())
-    return list(db.scalars(stmt))
+    stmt = stmt.order_by(Document.created_at.desc()).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    docs = list(db.scalars(stmt))
+    if not include_content:
+        # 轻量模式（默认）：content 只返回截断摘要；全文走 GET /documents/{id} 详情接口
+        for d in docs:
+            d.content = summarize_content(d.content)
+    return docs
 
 
 @router.post("", response_model=DocumentOut, status_code=201)
@@ -254,6 +380,17 @@ def get_unlinked_mentions(doc_id: uuid.UUID, db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/{doc_id}/insight", response_model=DocumentInsight)
+def get_document_insight(doc_id: uuid.UUID, db: Session = Depends(get_db)):
+    """文档洞察：基于正文词频的 top 关键词标签 + 一句话摘要（供前端"智能洞察"卡片）"""
+    doc = get_doc_or_404(db, doc_id)
+    body = doc.content or ""
+    return DocumentInsight(
+        summary=one_line_summary(body or doc.description or ""),
+        suggested_tags=extract_keywords(f"{doc.title} {body}"),
+    )
+
+
 @router.delete("/{doc_id}", status_code=204)
 def delete_document(doc_id: uuid.UUID, hard: bool = False, db: Session = Depends(get_db)):
     # 硬删除允许作用于已软删除的文档（彻底清理）
@@ -271,15 +408,21 @@ def delete_document(doc_id: uuid.UUID, hard: bool = False, db: Session = Depends
 async def upload_document(    request: Request,
     file: UploadFile = File(...),
     collection_id: uuid.UUID | None = Form(default=None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
 ):
     """上传书籍/PDF：流式写入磁盘 + 后端提取元数据与封面"""
     enforce_rate_limit(request, max_requests=50, window_seconds=60)
 
-    max_bytes = 500 * 1024 * 1024
+    max_bytes = settings.upload_max_size_mb * 1024 * 1024
 
     filename = file.filename or "unnamed"
     fmt = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if fmt not in UPLOAD_FORMAT_WHITELIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format: .{fmt or '(none)'}；allowed: {', '.join(sorted(UPLOAD_FORMAT_WHITELIST))}",
+        )
     doc_id = uuid.uuid4()
 
     try:
@@ -323,11 +466,16 @@ async def upload_document(    request: Request,
     )
 
     if collection_id is None:
-        target = auto_classify.classify(meta["title"] or filename, meta["author"] or "")
+        # 三级自动分类：标题/作者关键词 → 已提取正文词频 → （后台）OCR 扫描件
+        target = auto_classify.classify_document(
+            meta["title"] or filename, meta["author"] or "", text_content
+        )
         if target:
             col = db.scalar(select(Collection).where(Collection.name == target))
             if col:
                 collection_id = col.id
+        elif settings.auto_classify_ocr and fmt in ("pdf", "epub"):
+            background_tasks.add_task(classify_ocr_background, str(doc_id), fmt, rel_path)
 
     doc = Document(
         id=doc_id,
@@ -351,6 +499,39 @@ async def upload_document(    request: Request,
     db.add(doc)
     db.commit()
     return doc
+
+
+def classify_ocr_background(doc_id: str, fmt: str, rel_path: str) -> None:
+    """后台 OCR 分类：扫描件采样页 OCR → 词频打分 → 若无分类则写入。
+
+    上传响应已返回；独立会话执行，失败仅记日志不影响主流程。
+    """
+    import logging
+
+    logger = logging.getLogger("kb.ocr_classify")
+    try:
+        with SessionLocal() as db:
+            doc = db.get(Document, uuid.UUID(doc_id))
+            if not doc or doc.deleted_at or doc.collection_id is not None:
+                return
+            path = file_storage.abs_path(doc.file_path or rel_path)
+            if not path.is_file():
+                return
+            text = ocr_classify.ocr_book_text(path, fmt)
+            if len(text) < 500:
+                logger.info("OCR 分类无有效文本，跳过: %s", doc.title)
+                return
+            target = auto_classify.classify_document(doc.title or "", doc.author or "", text)
+            if not target:
+                logger.info("OCR 分类无主题特征，跳过: %s", doc.title)
+                return
+            col = db.scalar(select(Collection).where(Collection.name == target))
+            if col:
+                doc.collection_id = col.id
+                db.commit()
+                logger.info("OCR 后台分类: 《%s》 -> %s", doc.title, target)
+    except Exception as exc:
+        logging.getLogger("kb.ocr_classify").warning("OCR 后台分类失败: %s", exc, exc_info=True)
 
 
 @router.get("/{doc_id}/file")
@@ -388,14 +569,21 @@ def get_document_file(doc_id: uuid.UUID, request: Request, db: Session = Depends
                 content=chunk,
                 status_code=206,
                 media_type=media_type,
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{size}",
-                    "Content-Length": str(length),
-                    "Accept-Ranges": "bytes",
-                },
+                headers=file_download_headers(
+                    doc,
+                    {
+                        "Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(length),
+                        "Accept-Ranges": "bytes",
+                    },
+                ),
             )
 
-    return FileResponse(path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers=file_download_headers(doc, {"Accept-Ranges": "bytes"}),
+    )
 
 
 @router.get("/{doc_id}/cover")

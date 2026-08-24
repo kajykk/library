@@ -131,7 +131,11 @@ export async function loadLibrary(): Promise<LibraryData> {
   // 后端恢复可用时，重放离线期间积压的写操作
   flushPendingWrites().catch((err) => console.warn('重放离线队列失败:', err));
 
-  const [docs, collections] = await Promise.all([listDocuments(), listCollections()]);
+  // 轻量模式：列表只取元数据+正文摘要，编辑/阅读时再按 id 拉 detail 全文
+  const [docs, collections] = await Promise.all([
+    listDocuments({ include_content: 'false' }),
+    listCollections(),
+  ]);
   const nameById = new Map(collections.map((c) => [c.id, c.name]));
   const books = docs.filter((d) => BOOK_TYPES.has(d.type)).map((d) => apiDocToBook(d, nameById));
   const categories = collections.map(apiCollectionToCategory);

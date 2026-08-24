@@ -1,122 +1,22 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { useEditor, EditorContent, Extension, type Editor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Markdown } from 'tiptap-markdown';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import * as Y from 'yjs';
-import { WebsocketProvider } from 'y-websocket';
-import Collaboration from '@tiptap/extension-collaboration';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
-import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import {
   NotebookPen,
   Plus,
   Trash2,
-  ArrowLeft,
-  Bold,
-  Italic,
-  Heading2,
-  List,
-  ListOrdered,
-  Code,
-  Quote,
   CalendarDays,
-  Link2,
-  History,
-  BookMarked,
-  BookOpen,
-  X,
-  RotateCcw,
-  Loader2,
   ChevronDown,
-  Wifi,
-  WifiOff,
-  Users,
-  Minus,
-  Heading1,
-  Heading3,
+  X,
   Search,
+  Sparkles,
 } from 'lucide-react';
-import { ApiDocument, listDocuments, patchDocument, createDocument, deleteDocument, setDocumentTags, getBacklinks, getUnlinkedMentions, createLink, getVersions, getVersion, restoreVersion, searchAnnotations, getCollabWsUrl, getApiToken, downloadMarkdownExport, AnnotationHit, DocumentVersionSummary, DocumentVersionDetail, Backlink, DocumentPatch } from '@/lib/api/client';
+import { ApiDocument, listDocuments, createDocument, patchDocument, deleteDocument, downloadMarkdownExport } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
-
-function highlightSnippet(snippet: string) {
-  const parts = snippet.split(/<\/?mark>/);
-  return parts.map((part, i) =>
-    i % 2 === 1 ? (
-      <mark key={i} className="bg-yellow-100 rounded px-0.5">{part}</mark>
-    ) : (
-      <span key={i}>{part}</span>
-    ),
-  );
-}
-
-// ---------- 斜杠命令菜单 ----------
-
-const SLASH_ITEMS: Array<{
-  id: string;
-  label: string;
-  hint: string;
-  icon: React.ReactNode;
-  apply: (editor: Editor) => void;
-}> = [
-  { id: 'h1', label: '一级标题', hint: 'H1', icon: <Heading1 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
-  { id: 'h2', label: '二级标题', hint: 'H2', icon: <Heading2 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
-  { id: 'h3', label: '三级标题', hint: 'H3', icon: <Heading3 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
-  { id: 'bullet', label: '无序列表', hint: '•', icon: <List className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBulletList().run() },
-  { id: 'ordered', label: '有序列表', hint: '1.', icon: <ListOrdered className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleOrderedList().run() },
-  { id: 'quote', label: '引用', hint: '❝', icon: <Quote className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBlockquote().run() },
-  { id: 'code', label: '代码块', hint: '</>', icon: <Code className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleCodeBlock().run() },
-  { id: 'rule', label: '分隔线', hint: '——', icon: <Minus className="w-4 h-4" />, apply: (e) => e.chain().focus().setHorizontalRule().run() },
-  { id: 'wikilink', label: '双链链接', hint: '[[', icon: <Link2 className="w-4 h-4" />, apply: (e) => e.chain().focus().insertContent('[[').run() },
-];
-
-// ---------- [[双链]] 装饰 + 悬浮预览 ----------
-
-const wikilinkKey = new PluginKey('kb-wikilink');
-
-function wikilinkDecorations(doc: any): DecorationSet {
-  const decorations: Decoration[] = [];
-  doc.descendants((node: { isText: boolean; text?: string }, pos: number) => {
-    if (!node.isText || !node.text) return;
-    const regex = /\[\[([^\[\]\n]+)\]\]/g;
-    let m: RegExpExecArray | null;
-    while ((m = regex.exec(node.text)) !== null) {
-      decorations.push(
-        Decoration.inline(pos + m.index, pos + m.index + m[0].length, {
-          nodeName: 'span',
-          class: 'kb-wikilink',
-          'data-title': m[1],
-        }),
-      );
-    }
-  });
-  return DecorationSet.create(doc, decorations);
-}
-
-const WikiLinkExtension = Extension.create({
-  name: 'wikilink',
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: wikilinkKey,
-        state: {
-          init: (_, state) => wikilinkDecorations(state.doc),
-          apply: (tr, old) => (tr.docChanged ? wikilinkDecorations(tr.doc) : old),
-        },
-        props: {
-          decorations(state) {
-            return this.getState(state);
-          },
-        },
-      }),
-    ];
-  },
-});
+import NoteEditor from '@/components/notes/NoteEditor';
 
 // ---------- 笔记模板 ----------
 
@@ -157,13 +57,17 @@ function NotesPageInner() {
   const [mode, setMode] = useState<'api' | 'local' | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
+  const [quickTitle, setQuickTitle] = useState('');
+  const [quickContent, setQuickContent] = useState('');
+  const [workflowFilter, setWorkflowFilter] = useState<'all' | 'inbox' | 'review' | 'done'>('all');
+  const [selectedNotes, setSelectedNotes] = useState<Set<string>>(new Set());
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const listParentRef = useRef<HTMLDivElement>(null);
 
   const notesQuery = useQuery({
     queryKey: ['documents', listType],
-    queryFn: () => listDocuments({ type: listType }),
+    queryFn: () => listDocuments({ type: listType, include_content: 'false' }),
     enabled: mode === 'api',
   });
   const notes = notesQuery.data ?? [];
@@ -173,13 +77,27 @@ function NotesPageInner() {
   const [listSearch, setListSearch] = useState('');
   const visibleNotes = useMemo(() => {
     const q = listSearch.trim().toLowerCase();
-    if (!q) return notes;
-    return notes.filter(
-      (n) =>
+    return notes.filter((n) => {
+      const matchesWorkflow = workflowFilter === 'all' || ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') === workflowFilter;
+      if (!matchesWorkflow) return false;
+      if (!q) return true;
+      return (
         (n.title || '').toLowerCase().includes(q) ||
-        (n.tags || []).some((t) => (t.name || '').toLowerCase().includes(q)),
-    );
-  }, [notes, listSearch]);
+        (n.tags || []).some((t) => (t.name || '').toLowerCase().includes(q))
+      );
+    });
+  }, [notes, listSearch, workflowFilter]);
+
+  const workflowCounts = useMemo(() => {
+    const counts = { all: notes.length, inbox: 0, review: 0, done: 0 };
+    notes.forEach((n) => {
+      const wf = ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') as 'inbox' | 'review' | 'done';
+      counts[wf] += 1;
+    });
+    return counts;
+  }, [notes]);
+
+  const inboxCandidates = useMemo(() => notes.filter((n) => ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') === 'inbox'), [notes]);
 
   const rowVirtualizer = useVirtualizer({
     count: listType === 'note' ? visibleNotes.length : 0,
@@ -194,11 +112,22 @@ function NotesPageInner() {
 
   const refetchNotes = () => queryClient.invalidateQueries({ queryKey: ['documents', listType] });
 
+  const toggleSelectedNote = (id: string) => {
+    setSelectedNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedNotes(new Set());
+
   // 支持 /notes?open=<id> 直达编辑
   useEffect(() => {
     const openId = searchParams.get('open');
     if (openId && mode === 'api') {
-      listDocuments({ q: '' })
+      listDocuments({ q: '', include_content: 'false' })
         .then((docs) => {
           const target = docs.find((d) => d.id === openId);
           if (!target) return;
@@ -206,7 +135,7 @@ function NotesPageInner() {
           if (target.type === 'webclip' || target.type === 'article') setListType('webclip');
           setEditingId(openId);
         })
-        .catch(() => undefined);
+        .catch((err) => console.warn('直达笔记定位失败:', err));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, mode]);
@@ -215,12 +144,15 @@ function NotesPageInner() {
     setShowTemplateMenu(false);
     const content = template
       ? template.content(new Date().toLocaleDateString('zh-CN'))
-      : '';
+      : quickContent;
+    const title = (template ? template.name : quickTitle).trim() || '无标题笔记';
     const doc = await createDocument({
       type: 'note',
-      title: template ? template.name : '无标题笔记',
+      title,
       content,
     });
+    setQuickTitle('');
+    setQuickContent('');
     refetchNotes();
     setEditingId(doc.id);
   };
@@ -230,7 +162,7 @@ function NotesPageInner() {
     const title = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     let existing = notes.find((n) => n.title === title);
     if (!existing) {
-      const all = await listDocuments();
+      const all = await listDocuments({ include_content: 'false' });
       existing = all.find((n) => n.title === title);
     }
     if (existing) {
@@ -266,6 +198,20 @@ function NotesPageInner() {
     await deleteDocument(id);
     refetchNotes();
     if (editingId === id) setEditingId(null);
+    setSelectedNotes((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const handleBatchArchive = async (workflow: 'review' | 'done') => {
+    if (selectedNotes.size === 0) return;
+    const ids = [...selectedNotes];
+    if (!confirm(`将选中的 ${ids.length} 篇笔记标记为${workflow === 'review' ? '复盘中' : '已归档'}？`)) return;
+    await Promise.all(ids.map((id) => patchDocument(id, { meta: { ...(notes.find((n) => n.id === id)?.meta || {}), workflow } })));
+    clearSelection();
+    refetchNotes();
   };
 
   if (mode === 'local') {
@@ -300,7 +246,7 @@ function NotesPageInner() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1">
           {([['note', '笔记'], ['webclip', '剪藏']] as const).map(([type, label]) => (
             <button
@@ -318,7 +264,29 @@ function NotesPageInner() {
           ))}
         </div>
         {listType === 'note' && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {selectedNotes.size > 0 && (
+              <>
+                <button
+                  onClick={() => handleBatchArchive('review')}
+                  className="px-4 py-2 border border-blue-200 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors text-sm"
+                >
+                  标记复盘中
+                </button>
+                <button
+                  onClick={() => handleBatchArchive('done')}
+                  className="px-4 py-2 border border-emerald-200 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 transition-colors text-sm"
+                >
+                  快速归档
+                </button>
+                <button
+                  onClick={clearSelection}
+                  className="px-4 py-2 border border-gray-200 bg-white text-gray-600 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                >
+                  取消选择
+                </button>
+              </>
+            )}
             <button
               onClick={handleDailyNote}
               className="flex items-center gap-2 px-4 py-2 border border-gray-200 bg-white text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
@@ -338,13 +306,41 @@ function NotesPageInner() {
               导入 MD
               <input type="file" accept=".md,.markdown,.txt" multiple onChange={handleImportMarkdown} className="hidden" />
             </label>
+          </div>
+        )}
+      </div>
+
+      {listType === 'note' && (
+        <div className="mb-4 rounded-2xl border border-gray-200 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm">
+          <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
+            <Sparkles className="w-3.5 h-3.5 text-primary-500" />
+            快速捕获、模板化创建、双链联想、版本历史、引用插入与待整理工作流已整合到同一页面。
+          </div>
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              {([['all', '全部'], ['inbox', '待整理'], ['review', '复盘中'], ['done', '已归档']] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setWorkflowFilter(value)}
+                  className={`px-3 py-1 rounded-full text-xs transition-colors ${
+                    workflowFilter === value ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {label} · {workflowCounts[value]}
+                </button>
+              ))}
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">快速新建</h2>
+              <p className="text-xs text-gray-500 mt-1">先捕获，再整理。适合会议纪要、临时灵感与待办。</p>
+            </div>
             <div className="relative">
               <button
                 onClick={() => setShowTemplateMenu((v) => !v)}
                 className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                新建笔记
+                模板新建
                 <ChevronDown className="w-3.5 h-3.5" />
               </button>
               {showTemplateMenu && (
@@ -363,8 +359,30 @@ function NotesPageInner() {
               )}
             </div>
           </div>
-        )}
-      </div>
+          <div className="grid gap-3 md:grid-cols-[1fr_2fr_auto]">
+            <input
+              type="text"
+              value={quickTitle}
+              onChange={(e) => setQuickTitle(e.target.value)}
+              placeholder="新笔记标题"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-100"
+            />
+            <input
+              type="text"
+              value={quickContent}
+              onChange={(e) => setQuickContent(e.target.value)}
+              placeholder="先写一句要点，稍后再展开"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-100"
+            />
+            <button
+              onClick={() => handleCreate()}
+              className="px-4 py-2 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+            >
+              立即创建
+            </button>
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="p-12 text-center text-gray-500">加载中...</div>
@@ -430,10 +448,23 @@ function NotesPageInner() {
                         <p className="text-sm text-gray-400 mt-1 truncate">
                           {(note.content || '').slice(0, 100) || '（空）'}
                         </p>
-                        <div className="flex items-center gap-2 mt-2">
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
                           <span className="text-xs text-gray-400">
                             {new Date(note.updated_at).toLocaleString('zh-CN')}
                           </span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSelectedNote(note.id);
+                            }}
+                            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                              selectedNotes.has(note.id)
+                                ? 'border-primary-500 bg-primary-50 text-primary-700'
+                                : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
+                            }`}
+                          >
+                            {selectedNotes.has(note.id) ? '已选中' : '选择'}
+                          </button>
                           {note.tags.map((t) => (
                             <span key={t.id} className="text-xs px-2 py-0.5 rounded-full bg-primary-50 text-primary-700">
                               {t.name}
@@ -503,870 +534,6 @@ function NotesPageInner() {
               )}
             </div>
           ))}
-        </div>
-      )}
-    </main>
-  );
-}
-
-function NoteEditor({
-  note,
-  onBack,
-  onDelete,
-  onOpenNote,
-}: {
-  note: ApiDocument;
-  onBack: () => void;
-  onDelete: () => void;
-  onOpenNote: (id: string) => void;
-}) {
-  const router = useRouter();
-  const [title, setTitle] = useState(note.title);
-  const [tags, setTags] = useState(note.tags.map((t) => t.name));
-  const [newTag, setNewTag] = useState('');
-  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'dirty'>('saved');
-  const [mention, setMention] = useState<{ query: string; top: number; left: number } | null>(null);
-  const [slash, setSlash] = useState<{ query: string; top: number; left: number; index: number } | null>(null);
-  const [allTitles, setAllTitles] = useState<Array<{ id: string; title: string }>>([]);
-  const [backlinks, setBacklinks] = useState<Backlink[]>([]);
-  const [unlinked, setUnlinked] = useState<Backlink[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-  const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
-  const [viewingVersion, setViewingVersion] = useState<DocumentVersionDetail | null>(null);
-  const [showCite, setShowCite] = useState(false);
-  const [citeQuery, setCiteQuery] = useState('');
-  const [citeHits, setCiteHits] = useState<AnnotationHit[]>([]);
-  const [citeLoading, setCiteLoading] = useState(false);
-  const citeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const contentRef = useRef(note.content || '');
-  const titleRef = useRef(note.title);
-  const tagsRef = useRef(tags);
-  // 最近一次已落库的标签集合：增删都按与它的差异决定是否提交（避免删回初始值被跳过）
-  const savedTagsRef = useRef<string[]>(note.tags.map((t) => t.name));
-  const editorContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    listDocuments()
-      .then((docs) => setAllTitles(docs.filter((d) => d.id !== note.id).map((d) => ({ id: d.id, title: d.title }))))
-      .catch(() => undefined);
-    getBacklinks(note.id).then(setBacklinks).catch(() => undefined);
-    getUnlinkedMentions(note.id).then(setUnlinked).catch(() => undefined);
-  }, [note.id]);
-
-  const handleLinkUnlinked = async (sourceId: string) => {
-    try {
-      await createLink(sourceId, note.id, 'mention');
-      setUnlinked((prev) => prev.filter((u) => u.id !== sourceId));
-      getBacklinks(note.id).then(setBacklinks).catch(() => undefined);
-    } catch (err) {
-      alert('创建链接失败：' + (err as Error).message);
-    }
-  };
-
-  const openHistory = async () => {
-    setShowHistory(true);
-    try {
-      setVersions(await getVersions(note.id));
-    } catch (err) {
-      console.error('加载版本历史失败:', err);
-    }
-  };
-
-  const openVersionDetail = async (versionId: string) => {
-    try {
-      setViewingVersion(await getVersion(note.id, versionId));
-    } catch (err) {
-      alert('加载版本失败：' + (err as Error).message);
-    }
-  };
-
-  const handleRestore = async () => {
-    if (!viewingVersion) return;
-    if (!confirm('将文档内容恢复到此版本？恢复前会自动保存当前版本。')) return;
-    try {
-      const restored = await restoreVersion(note.id, viewingVersion.id);
-      setTitle(restored.title);
-      titleRef.current = restored.title;
-      contentRef.current = restored.content || '';
-      editor?.commands.setContent(restored.content || '');
-      setViewingVersion(null);
-      setVersions(await getVersions(note.id));
-      setSaveState('saved');
-    } catch (err) {
-      alert('恢复失败：' + (err as Error).message);
-    }
-  };
-
-  useEffect(() => {
-    if (!showCite) return;
-    setCiteLoading(true);
-    searchAnnotations(citeQuery)
-      .then(setCiteHits)
-      .catch(() => setCiteHits([]))
-      .finally(() => setCiteLoading(false));
-    return () => undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCite]);
-
-  useEffect(() => {
-    if (!showCite) return;
-    if (citeTimer.current) clearTimeout(citeTimer.current);
-    citeTimer.current = setTimeout(async () => {
-      setCiteLoading(true);
-      try {
-        setCiteHits(await searchAnnotations(citeQuery));
-      } catch {
-        setCiteHits([]);
-      } finally {
-        setCiteLoading(false);
-      }
-    }, 300);
-    return () => {
-      if (citeTimer.current) clearTimeout(citeTimer.current);
-    };
-  }, [citeQuery, showCite]);
-
-  const insertCitation = async (hit: AnnotationHit) => {
-    const quoteText = hit.quote || hit.content || '未命名标注';
-    const html = `<blockquote><p>「${quoteText.replace(/</g, '&lt;').replace(/>/g, '&gt;')}」—— 《${hit.document_title}》</p></blockquote><p></p>`;
-    editor?.chain().focus().insertContent(html).run();
-    try {
-      await createLink(note.id, hit.document_id, 'cite');
-    } catch (err) {
-      console.warn('创建 cite 链接失败:', err);
-    }
-    setShowCite(false);
-    setCiteQuery('');
-  };
-
-  const scheduleSave = useCallback(() => {
-    setSaveState('dirty');
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      setSaveState('saving');
-      try {
-        const patch: DocumentPatch = { title: titleRef.current || '无标题笔记', content: contentRef.current };
-        await patchDocument(note.id, patch);
-        if (JSON.stringify(tagsRef.current) !== JSON.stringify(savedTagsRef.current)) {
-          await setDocumentTags(note.id, tagsRef.current);
-          savedTagsRef.current = [...tagsRef.current];
-        }
-        setSaveState('saved');
-      } catch (err) {
-        console.error('自动保存失败:', err);
-        setSaveState('dirty');
-      }
-    }, 800);
-  }, [note.id, note.tags]);
-
-  // 实时协作（Yjs + 后端 WebSocket）
-  const [collabStatus, setCollabStatus] = useState<'connecting' | 'connected' | 'offline'>('connecting');
-  const [onlineUsers, setOnlineUsers] = useState<{ clientId: number; name: string }[]>([]);
-  const collabRef = useRef<{ ydoc: Y.Doc; provider: WebsocketProvider; seeded: boolean } | null>(null);
-  if (!collabRef.current) {
-    const ydoc = new Y.Doc();
-    const provider = new WebsocketProvider(getCollabWsUrl(note.id), `doc-${note.id}`, ydoc, {
-      connect: true,
-      params: { token: getApiToken() },
-    });
-    collabRef.current = { ydoc, provider, seeded: false };
-  }
-
-  const [wikilinkPreview, setWikilinkPreview] = useState<{
-    title: string;
-    x: number;
-    y: number;
-    doc: { id: string; title: string; type: string; snippet: string } | null;
-  } | null>(null);
-
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Markdown.configure({ html: false, transformPastedText: true }),
-      WikiLinkExtension,
-      Collaboration.configure({ document: collabRef.current.ydoc }),
-    ],
-    content: '',
-    onUpdate: ({ editor }) => {
-      contentRef.current = (editor.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ?? '';
-      scheduleSave();
-    },
-    editorProps: {
-      attributes: {
-        class: 'prose max-w-none min-h-[50vh] focus:outline-none',
-      },
-      handleClick: (_, __, event) => {
-        const target = (event.target as HTMLElement).closest('.kb-wikilink') as HTMLElement | null;
-        if (!target) return false;
-        const title = target.getAttribute('data-title') || '';
-        const rect = target.getBoundingClientRect();
-        setWikilinkPreview({ title, x: rect.left, y: rect.bottom + 6, doc: null });
-        listDocuments({ q: title })
-          .then((docs) => {
-            const found = docs.find((d) => d.title === title);
-            setWikilinkPreview((prev) =>
-              prev && prev.title === title
-                ? {
-                    ...prev,
-                    doc: found
-                      ? {
-                          id: found.id,
-                          title: found.title,
-                          type: found.type,
-                          snippet: (found.content || found.description || '').slice(0, 120),
-                        }
-                      : null,
-                  }
-                : prev,
-            );
-          })
-          .catch(() => undefined);
-        return true;
-      },
-    },
-  });
-
-  // 协作：状态指示 + 在线成员（awareness）+ 本地内容种子
-  useEffect(() => {
-    const { provider } = collabRef.current as { provider: WebsocketProvider };
-    const onStatus = ({ status }: { status: string }) => {
-      setCollabStatus(status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : 'offline');
-    };
-    const onSync = (isSynced: boolean) => {
-      if (!isSynced) return;
-      const collab = collabRef.current;
-      if (!collab || collab.seeded) return;
-      collab.seeded = true;
-      if (editor && editor.isEmpty && note.content) {
-        editor.commands.setContent(note.content);
-      }
-    };
-    const refreshUsers = () => {
-      const awareness = provider.awareness;
-      const myId = awareness.clientID;
-      const users: { clientId: number; name: string }[] = [];
-      awareness.getStates().forEach((state, clientId) => {
-        if (clientId === myId) return;
-        const user = (state as Record<string, { name?: string }>)?.user;
-        users.push({ clientId, name: user?.name || `用户 ${String(clientId).slice(-4)}` });
-      });
-      setOnlineUsers(users);
-    };
-    provider.awareness.setLocalStateField('user', {
-      name: typeof window !== 'undefined' ? window.localStorage.getItem('kb_user_name') || '未命名用户' : '未命名用户',
-    });
-    provider.awareness.on('change', refreshUsers);
-    refreshUsers();
-    provider.on('status', onStatus);
-    provider.on('sync', onSync);
-    return () => {
-      provider.awareness.off('change', refreshUsers);
-      provider.off('status', onStatus);
-      provider.off('sync', onSync);
-    };
-  }, [editor, note.content]);
-
-  useEffect(() => {
-    return () => {
-      const collab = collabRef.current;
-      if (collab) {
-        collab.provider.destroy();
-        collab.ydoc.destroy();
-        collabRef.current = null;
-      }
-    };
-  }, []);
-
-  // [[ 双链联想：检测光标前是否有未闭合的 [[
-  useEffect(() => {
-    if (!editor) return;
-    const checkMention = () => {
-      const { state, view } = editor;
-      const pos = state.selection.from;
-      const textBefore = state.doc.textBetween(Math.max(0, pos - 40), pos, '\n', '\0');
-      const m = textBefore.match(/\[\[([^\[\]\n]*)$/);
-      if (!m) {
-        setMention(null);
-        return;
-      }
-      let top = 80;
-      let left = 24;
-      try {
-        const coords = view.coordsAtPos(pos - m[1].length);
-        const container = editorContainerRef.current?.getBoundingClientRect();
-        if (container) {
-          top = coords.top - container.top;
-          left = coords.left - container.left;
-        }
-      } catch {
-        /* 回退默认位置 */
-      }
-      setMention({ query: m[1], top, left });
-    };
-    editor.on('update', checkMention);
-    return () => {
-      editor.off('update', checkMention);
-    };
-  }, [editor]);
-
-  // 斜杠命令：检测光标前是否为「空格+ /词」
-  useEffect(() => {
-    if (!editor) return;
-    const checkSlash = () => {
-      const { state, view } = editor;
-      const pos = state.selection.from;
-      if (pos === 0) {
-        setSlash(null);
-        return;
-      }
-      const textBefore = state.doc.textBetween(Math.max(0, pos - 30), pos, '\n', '\0');
-      const m = textBefore.match(/(?:^|\s)\/([^\s/]*)$/);
-      if (!m || m[1].length > 20) {
-        setSlash(null);
-        return;
-      }
-      let top = 80;
-      let left = 24;
-      try {
-        const coords = view.coordsAtPos(pos - m[1].length - 1);
-        const container = editorContainerRef.current?.getBoundingClientRect();
-        if (container) {
-          top = coords.top - container.top;
-          left = coords.left - container.left;
-        }
-      } catch {
-        /* 回退默认位置 */
-      }
-      setSlash((prev) =>
-        prev && prev.query === m[1] && prev.top === top && prev.left === left
-          ? prev
-          : { query: m[1], top, left, index: 0 },
-      );
-    };
-    editor.on('update', checkSlash);
-    editor.on('selectionUpdate', checkSlash);
-    return () => {
-      editor.off('update', checkSlash);
-      editor.off('selectionUpdate', checkSlash);
-    };
-  }, [editor]);
-
-  const slashItems = useMemo(() => {
-    if (!slash) return [];
-    const q = slash.query.toLowerCase();
-    return SLASH_ITEMS.filter(
-      (i) => !q || i.label.toLowerCase().includes(q) || i.hint.toLowerCase().includes(q),
-    );
-  }, [slash]);
-
-  // 删除已输入的 "/词" 文本
-  const removeSlashText = (query: string) => {
-    if (!editor) return;
-    const pos = editor.state.selection.from;
-    const start = pos - query.length - 1;
-    if (start >= 0) {
-      editor.chain().focus().deleteRange({ from: start, to: pos }).run();
-    }
-  };
-
-  const applySlash = (index?: number) => {
-    if (!editor || !slash) return;
-    const item = slashItems[Math.min(index ?? slash.index, slashItems.length - 1)];
-    if (!item) return;
-    const pos = editor.state.selection.from;
-    const start = pos - slash.query.length - 1;
-    if (start >= 0) {
-      editor.chain().focus().deleteRange({ from: start, to: pos }).run();
-    }
-    item.apply(editor);
-    setSlash(null);
-  };
-
-  useEffect(() => {
-    if (!slash) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        removeSlashText(slash.query);
-        setSlash(null);
-        return;
-      }
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSlash((s) => (s ? { ...s, index: Math.min(s.index + 1, slashItems.length - 1) } : s));
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSlash((s) => (s ? { ...s, index: Math.max(s.index - 1, 0) } : s));
-        return;
-      }
-      if (e.key === 'Enter' && slashItems.length > 0) {
-        e.preventDefault();
-        applySlash();
-        return;
-      }
-      if (e.key === 'Backspace' && slash.query.length === 0) {
-        setSlash(null);
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, slash, slashItems]);
-
-  const mentionCandidates = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.query.trim().toLowerCase();
-    return allTitles
-      .filter((t) => !q || t.title.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [mention, allTitles]);
-
-  const insertMention = (title: string) => {
-    if (!editor || !mention) return;
-    editor.chain().focus().insertContent(`${title}]]`).run();
-    setMention(null);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      // 卸载时若还有未落盘的修改，补发一次保存，避免快速返回丢标题/正文
-      patchDocument(note.id, {
-        title: titleRef.current || '无标题笔记',
-        content: contentRef.current,
-      }).catch((err) => console.error('卸载保存失败:', err));
-    };
-  }, [note.id]);
-
-  const updateTitle = (value: string) => {
-    setTitle(value);
-    titleRef.current = value;
-    scheduleSave();
-  };
-
-  const addTag = () => {
-    const t = newTag.trim();
-    if (!t || tags.includes(t)) return;
-    const next = [...tags, t];
-    setTags(next);
-    tagsRef.current = next;
-    setNewTag('');
-    scheduleSave();
-  };
-
-  const removeTag = (t: string) => {
-    const next = tags.filter((x) => x !== t);
-    setTags(next);
-    tagsRef.current = next;
-    scheduleSave();
-  };
-
-  const btn = (active: boolean) =>
-    `p-1.5 rounded transition-colors ${active ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:bg-gray-100'}`;
-
-  return (
-    <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      <div className="flex items-center justify-between mb-4">
-        <button onClick={onBack} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors">
-          <ArrowLeft className="w-4 h-4" />
-          返回列表
-        </button>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400">
-            {saveState === 'saving' ? '保存中...' : saveState === 'dirty' ? '未保存' : '已保存'}
-          </span>
-          <span
-            className={`flex items-center gap-1 text-xs ${collabStatus === 'connected' ? 'text-emerald-600' : collabStatus === 'connecting' ? 'text-amber-500' : 'text-gray-400'}`}
-            title={collabStatus === 'connected' ? '实时协作已连接' : collabStatus === 'connecting' ? '协作连接中...' : '协作离线（本地编辑仍可保存）'}
-          >
-            {collabStatus === 'offline' ? <WifiOff className="w-3.5 h-3.5" /> : <Wifi className="w-3.5 h-3.5" />}
-            {collabStatus === 'connected' ? '已连接' : collabStatus === 'connecting' ? '连接中' : '离线'}
-          </span>
-          {collabStatus === 'connected' && onlineUsers.length > 0 && (
-            <span
-              className="flex items-center gap-1 text-xs text-primary-600"
-              title={onlineUsers.map((u) => u.name).join('、')}
-            >
-              <Users className="w-3.5 h-3.5" />
-              {onlineUsers.length} 人在线
-            </span>
-          )}
-          <button
-            onClick={() => setShowCite(true)}
-            className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-            title="从书籍标注中插入引用"
-          >
-            <BookMarked className="w-4 h-4" />
-            引用书籍
-          </button>
-          <button
-            onClick={openHistory}
-            className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-            title="版本历史"
-          >
-            <History className="w-4 h-4" />
-            历史
-          </button>
-          <button
-            onClick={onDelete}
-            className="flex items-center gap-1 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <Trash2 className="w-4 h-4" />
-            删除
-          </button>
-        </div>
-      </div>
-
-      <input
-        type="text"
-        value={title}
-        onChange={(e) => updateTitle(e.target.value)}
-        placeholder="笔记标题"
-        className="w-full text-2xl font-bold text-gray-900 px-0 py-2 border-none focus:outline-none bg-transparent"
-      />
-
-      <div className="flex items-center gap-2 flex-wrap my-3">
-        {tags.map((t) => (
-          <span key={t} className="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-1 text-sm text-primary-700">
-            {t}
-            <button onClick={() => removeTag(t)} className="hover:text-primary-900">×</button>
-          </span>
-        ))}
-        <input
-          type="text"
-          value={newTag}
-          onChange={(e) => setNewTag(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())}
-          placeholder="+ 标签"
-          className="text-sm border-none bg-transparent focus:outline-none w-24 text-gray-600"
-        />
-      </div>
-
-      {editor && (
-        <div className="flex items-center gap-1 border-b border-gray-200 pb-2 mb-4 flex-wrap">
-          <button onClick={() => editor.chain().focus().toggleBold().run()} className={btn(editor.isActive('bold'))} title="加粗">
-            <Bold className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleItalic().run()} className={btn(editor.isActive('italic'))} title="斜体">
-            <Italic className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} className={btn(editor.isActive('heading', { level: 2 }))} title="标题">
-            <Heading2 className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleBulletList().run()} className={btn(editor.isActive('bulletList'))} title="无序列表">
-            <List className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleOrderedList().run()} className={btn(editor.isActive('orderedList'))} title="有序列表">
-            <ListOrdered className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleCodeBlock().run()} className={btn(editor.isActive('codeBlock'))} title="代码块">
-            <Code className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleBlockquote().run()} className={btn(editor.isActive('blockquote'))} title="引用">
-            <Quote className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      <div ref={editorContainerRef} className="relative bg-white rounded-lg border border-gray-200 p-6">
-        <EditorContent editor={editor} />
-
-        {/* [[ 联想浮层 */}
-        {mention && mentionCandidates.length > 0 && (
-          <div
-            className="absolute z-20 w-64 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
-            style={{ top: mention.top + 24, left: mention.left }}
-          >
-            {mentionCandidates.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => insertMention(c.title)}
-                className="block w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-primary-50 truncate"
-              >
-                {c.title}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 斜杠命令浮层 */}
-        {slash && slashItems.length > 0 && (
-          <div
-            className="absolute z-30 w-72 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
-            style={{ top: slash.top + 24, left: slash.left }}
-          >
-            {slashItems.map((item, i) => (
-              <button
-                key={item.id}
-                onMouseEnter={() => setSlash((s) => (s ? { ...s, index: i } : s))}
-                onClick={() => applySlash(i)}
-                className={`flex w-full items-center gap-2.5 text-left px-3 py-2 text-sm transition-colors ${
-                  i === slash.index ? 'bg-primary-50 text-primary-700' : 'text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <span className="text-gray-400">{item.icon}</span>
-                <span className="font-medium">{item.label}</span>
-                <span className="ml-auto text-xs text-gray-400">{item.hint}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 反向链接 */}
-      <div className="mt-6">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">
-          反向链接（{backlinks.length}）
-        </h3>
-        {backlinks.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无其他文档引用本笔记</p>
-        ) : (
-          <div className="space-y-1">
-            {backlinks.map((b) => (
-              <button
-                key={b.id}
-                onClick={() => onOpenNote(b.id)}
-                className="block w-full text-left rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors group"
-                title="打开引用笔记"
-              >
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                  <span className="text-gray-700 group-hover:text-primary-600">{b.title}</span>
-                  <span className="text-xs text-gray-400">{b.type === 'note' ? '笔记' : b.type}</span>
-                </div>
-                {b.snippet && (
-                  <p className="text-xs text-gray-400 mt-1 line-clamp-2 pl-4">{highlightSnippet(b.snippet)}</p>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 未链接提及 */}
-      {unlinked.length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">
-            未链接提及（{unlinked.length}）
-          </h3>
-          <p className="text-xs text-gray-400 mb-2">
-            以下文档提到了「{note.title}」但尚未建立链接
-          </p>
-          <div className="space-y-1">
-            {unlinked.map((u) => (
-              <div
-                key={u.id}
-                className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-                    <button
-                      onClick={() => onOpenNote(u.id)}
-                      className="text-gray-700 hover:text-primary-600 text-left truncate"
-                    >
-                      {u.title}
-                    </button>
-                    <span className="text-xs text-gray-400 shrink-0">{u.type === 'note' ? '笔记' : u.type}</span>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1 line-clamp-2 pl-4">{highlightSnippet(u.snippet)}</p>
-                </div>
-                <button
-                  onClick={() => handleLinkUnlinked(u.id)}
-                  className="shrink-0 flex items-center gap-1 px-2.5 py-1 text-xs text-primary-600 border border-primary-200 rounded-md hover:bg-primary-50 transition-colors"
-                >
-                  <Link2 className="w-3 h-3" />
-                  建立链接
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* [[双链]] 悬浮预览卡片 */}
-      {wikilinkPreview && (
-        <div
-          className="fixed z-[70] w-72 rounded-lg border border-gray-200 bg-white shadow-xl"
-          style={{ left: Math.min(wikilinkPreview.x, window.innerWidth - 300), top: wikilinkPreview.y }}
-          onMouseLeave={() => setWikilinkPreview(null)}
-        >
-          <div className="px-3 py-2.5">
-            <p className="text-sm font-medium text-gray-900 truncate">
-              {wikilinkPreview.doc ? wikilinkPreview.doc.title : wikilinkPreview.title}
-            </p>
-            {wikilinkPreview.doc ? (
-              <>
-                <p className="text-xs text-gray-400 mt-0.5">
-                  {wikilinkPreview.doc.type === 'note' ? '笔记' : wikilinkPreview.doc.type}
-                </p>
-                {wikilinkPreview.doc.snippet && (
-                  <p className="text-xs text-gray-500 mt-1 line-clamp-3">{wikilinkPreview.doc.snippet}</p>
-                )}
-                <button
-                  onClick={() => {
-                    if (wikilinkPreview.doc) onOpenNote(wikilinkPreview.doc.id);
-                    setWikilinkPreview(null);
-                  }}
-                  className="mt-2 text-xs text-primary-600 hover:underline"
-                >
-                  打开文档 →
-                </button>
-              </>
-            ) : (
-              <p className="text-xs text-gray-400 mt-0.5">目标文档不存在（占位提及）</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 版本历史抽屉 */}
-      {showHistory && (
-        <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-slate-900/30" onClick={() => setShowHistory(false)} />
-          <aside className="absolute right-0 top-0 h-full w-80 bg-white shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-              <h3 className="text-sm font-medium text-gray-900">版本历史（{versions.length}）</h3>
-              <button onClick={() => setShowHistory(false)} className="p-1 hover:bg-gray-100 rounded">
-                <X className="w-4 h-4 text-gray-500" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {versions.length === 0 ? (
-                <p className="text-center text-sm text-gray-400 py-8">暂无历史版本</p>
-              ) : (
-                versions.map((v) => (
-                  <button
-                    key={v.id}
-                    onClick={() => openVersionDetail(v.id)}
-                    className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-                  >
-                    <p className="text-xs text-gray-500">
-                      {new Date(v.created_at).toLocaleString('zh-CN')}
-                    </p>
-                    <p className="text-sm text-gray-700 truncate">{v.title}</p>
-                    <p className="text-xs text-gray-400 truncate">{v.preview || '（空）'}</p>
-                  </button>
-                ))
-              )}
-            </div>
-          </aside>
-        </div>
-      )}
-
-      {/* 版本预览/恢复弹窗 */}
-      {viewingVersion && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-900/40" onClick={() => setViewingVersion(null)} />
-          <div className="relative w-full max-w-2xl max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-              <div>
-                <h3 className="text-sm font-medium text-gray-900">{viewingVersion.title}</h3>
-                <p className="text-xs text-gray-400">
-                  {new Date(viewingVersion.created_at).toLocaleString('zh-CN')}
-                </p>
-              </div>
-              <button onClick={() => setViewingVersion(null)} className="p-1 hover:bg-gray-100 rounded">
-                <X className="w-4 h-4 text-gray-500" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              <pre className="whitespace-pre-wrap font-sans text-sm text-gray-700 leading-relaxed">
-                {viewingVersion.content || '（空）'}
-              </pre>
-            </div>
-            <div className="flex justify-end gap-2 px-5 py-3 border-t border-gray-200">
-              <button
-                onClick={() => setViewingVersion(null)}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                关闭
-              </button>
-              <button
-                onClick={handleRestore}
-                className="flex items-center gap-1 px-3 py-1.5 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                恢复此版本
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 书籍引用弹窗 */}
-      {showCite && (
-        <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] p-4">
-          <div className="absolute inset-0 bg-slate-900/40" onClick={() => setShowCite(false)} />
-          <div className="relative w-full max-w-xl bg-white rounded-xl shadow-2xl flex flex-col max-h-[70vh]">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-              <h3 className="text-sm font-medium text-gray-900">插入书籍标注引用</h3>
-              <button onClick={() => setShowCite(false)} className="p-1 hover:bg-gray-100 rounded">
-                <X className="w-4 h-4 text-gray-500" />
-              </button>
-            </div>
-            <div className="px-5 py-3 border-b border-gray-100">
-              <input
-                type="text"
-                value={citeQuery}
-                onChange={(e) => setCiteQuery(e.target.value)}
-                placeholder="搜索划线或批注内容…"
-                autoFocus
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none"
-              />
-            </div>
-            <div className="flex-1 overflow-y-auto p-2">
-              {citeLoading ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-400">
-                  <Loader2 className="w-4 h-4 animate-spin" /> 搜索中...
-                </div>
-              ) : citeHits.length === 0 ? (
-                <p className="text-center text-sm text-gray-400 py-8">没有找到匹配的标注</p>
-              ) : (
-                citeHits.map((hit) => {
-                  const anchorPos = hit.anchor
-                    ? (hit.anchor as { chapter?: number; page?: number }).chapter ??
-                      (hit.anchor as { page?: number }).page
-                    : undefined;
-                  return (
-                    <div
-                      key={hit.id}
-                      className="flex items-start gap-2 px-3 py-2.5 rounded-lg hover:bg-primary-50 transition-colors"
-                    >
-                      <button
-                        onClick={() => insertCitation(hit)}
-                        className="block flex-1 min-w-0 text-left"
-                      >
-                        <p className="text-sm text-gray-800 line-clamp-2">
-                          {hit.quote || hit.content || '（无内容）'}
-                        </p>
-                        <p className="text-xs text-gray-400 mt-1">
-                          《{hit.document_title}》 · {hit.type === 'highlight' ? '划线' : hit.type === 'note' ? '批注' : '书签'}
-                        </p>
-                      </button>
-                      {anchorPos !== undefined && hit.document_type !== 'note' && (
-                        <button
-                          onClick={() => router.push(`/reader/${hit.document_id}?position=${anchorPos}`)}
-                          className="shrink-0 self-center flex items-center gap-1 px-2 py-1 text-xs text-primary-600 border border-primary-200 rounded-md hover:bg-primary-50 transition-colors"
-                          title="跳转到书中标注位置"
-                        >
-                          <BookOpen className="w-3 h-3" />
-                          跳转
-                        </button>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-            <div className="px-5 py-2.5 border-t border-gray-100 text-xs text-gray-400">
-              插入引用后将自动建立笔记与书籍的「引用」连接
-            </div>
-          </div>
         </div>
       )}
     </main>

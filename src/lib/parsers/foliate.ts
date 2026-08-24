@@ -31,7 +31,7 @@ async function fetchBlobUrlToDataUrl(url: string): Promise<string | null> {
   }
 }
 
-function detectImageMime(bytes: Uint8Array): string {
+export function detectImageMime(bytes: Uint8Array): string {
   if (bytes.length > 1 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
   if (bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50) return 'image/png';
   if (bytes.length > 3 && bytes[0] === 0x47 && bytes[1] === 0x49) return 'image/gif';
@@ -40,7 +40,7 @@ function detectImageMime(bytes: Uint8Array): string {
   return 'image/jpeg';
 }
 
-function resolveZipEntry(file: ZipFileFn, baseDir: string, href: string): ZipEntry | null {
+export function resolveZipEntry(file: ZipFileFn, baseDir: string, href: string): ZipEntry | null {
   const clean = href.split('#')[0].split('?')[0];
   const candidates = [clean];
   if (clean.startsWith('/')) candidates.push(clean.slice(1));

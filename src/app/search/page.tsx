@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search as SearchIcon, FileText, BookOpen, Loader2, X, Clock3 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { searchApi, SearchHit } from '@/lib/api/client';
+import { searchApi, SearchHit, getSearchSummary, SearchSummary } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -45,6 +45,8 @@ export default function SearchPage() {
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [summary, setSummary] = useState<SearchSummary | null>(null);
+  const [recommendations, setRecommendations] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [mode, setMode] = useState<'api' | 'local' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +78,8 @@ export default function SearchPage() {
     const trimmed = q.trim();
     if (!trimmed) {
       setHits(null);
+      setSummary(null);
+      setRecommendations([]);
       setError(null);
       return;
     }
@@ -88,12 +92,19 @@ export default function SearchPage() {
       return;
     }
     try {
-      const result = await searchApi(trimmed, type || undefined);
+      const [result, stat] = await Promise.all([
+        searchApi(trimmed, type || undefined),
+        getSearchSummary(trimmed).catch(() => null),
+      ]);
       setHits(result);
+      setSummary(stat);
+      setRecommendations(stat?.suggestions || []);
       if (result.length > 0) recordHistory(trimmed);
     } catch (err) {
       setError((err as Error).message);
       setHits(null);
+      setSummary(null);
+      setRecommendations([]);
     } finally {
       setIsSearching(false);
     }
@@ -156,6 +167,8 @@ export default function SearchPage() {
     if (e.key === 'Escape') {
       setQuery('');
       setHits(null);
+      setSummary(null);
+      setRecommendations([]);
       setActiveIndex(-1);
     }
   };
@@ -224,10 +237,27 @@ export default function SearchPage() {
       <div className="flex items-center gap-2 mb-4 text-xs text-gray-400">
         {isSearching && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
         {!isSearching && hits && (
-          <span>共 {hits.length} 条结果</span>
+          <span>共 {summary?.total ?? hits.length} 条结果</span>
         )}
         {!isSearching && !hits && <span>支持空格分隔多个关键词，按相关度排序</span>}
       </div>
+
+      {recommendations.length > 0 && (
+        <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3">
+          <p className="text-xs text-blue-700 mb-2">相关搜索建议</p>
+          <div className="flex flex-wrap gap-2">
+            {recommendations.map((suggestion) => (
+              <button
+                key={suggestion}
+                onClick={() => setQuery(suggestion)}
+                className="rounded-full bg-white px-3 py-1 text-xs text-blue-700 border border-blue-100 hover:bg-blue-100 transition-colors"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {mode === 'local' && (
         <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-500">

@@ -1,7 +1,8 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { Book, Category, exportData, importData } from '@/lib/db';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   loadLibrary,
   importBookFile,
@@ -41,16 +42,26 @@ export default function LibraryPage() {
   );
 }
 
+const LIBRARY_QUERY_KEY = ['documents', 'library'] as const;
+
+// 与 batch_import.py 一致的可导入格式
+const SUPPORTED_FORMATS = ['epub', 'pdf', 'mobi', 'azw3', 'azw', 'txt'];
+
+interface LibrarySnapshot {
+  books: Book[];
+  categories: Category[];
+  mode: DataSourceMode;
+  migrationHint: number;
+}
+
 function LibraryPageInner() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const authorFilter = searchParams.get('author') || '';
-  const [books, setBooks] = useState<Book[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [isLoading, setIsLoading] = useState(true);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -69,40 +80,68 @@ function LibraryPageInner() {
     startedAt: number;
     finishedAt: number | null;
   } | null>(null);
-  const [dataMode, setDataMode] = useState<DataSourceMode>('local');
-  const [migrationHint, setMigrationHint] = useState(0);
   // 大书库增量渲染：先渲染前 60 本，滚动到底点击"加载更多"
   const PAGE_STEP = 60;
   const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    setIsLoading(true);
-    try {
+  // 书架快照走 react-query：变更后 invalidateQueries 增量刷新，替代手动 loadData 全量 setState
+  const libraryQuery = useQuery({
+    queryKey: LIBRARY_QUERY_KEY,
+    queryFn: async (): Promise<LibrarySnapshot> => {
       const { books, categories, mode } = await loadLibrary();
-      setBooks(books);
-      setCategories(categories);
-      setDataMode(mode);
+      return {
+        books,
+        categories,
+        mode,
+        migrationHint: mode === 'api' && books.length === 0 ? await countLocalBooks() : 0,
+      };
+    },
+  });
+  const books = libraryQuery.data?.books ?? [];
+  const categories = libraryQuery.data?.categories ?? [];
+  const dataMode = libraryQuery.data?.mode ?? 'local';
+  const migrationHint = libraryQuery.data?.migrationHint ?? 0;
+  const isLoading = libraryQuery.isLoading;
 
-      // API 模式下若云端为空而本地有数据，提示迁移
-      if (mode === 'api' && books.length === 0) {
-        setMigrationHint(await countLocalBooks());
-      } else {
-        setMigrationHint(0);
+  const refetchLibrary = () => queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY });
+
+  // blob URL 生命周期管理：镜像最新 map，替换/卸载时 revoke，防止封面对象 URL 泄漏
+  const coverUrlsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    coverUrlsRef.current = coverUrls;
+  }, [coverUrls]);
+  useEffect(() => {
+    return () => {
+      Object.values(coverUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+      coverUrlsRef.current = {};
+    };
+  }, []);
+  // 当前书库内存活的书籍 id（含未渲染的），用于丢弃迟到返回的封面请求
+  const liveBookIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    liveBookIdsRef.current = new Set(books.map((b) => b.id));
+  }, [books]);
+
+  // 清理已不在书库中的封面 blob URL（删除/换库场景），避免泄漏
+  useEffect(() => {
+    const liveIds = new Set(books.map((b) => b.id));
+    setCoverUrls((prev) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const [id, url] of Object.entries(prev)) {
+        if (liveIds.has(id)) {
+          next[id] = url;
+        } else {
+          URL.revokeObjectURL(url);
+          changed = true;
+        }
       }
-    } finally {
-      setIsLoading(false);
-    }
-  };
+      return changed ? next : prev;
+    });
+  }, [books]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-
+  const runImport = async (files: File[], categoryOf: (file: File) => string) => {
     setImporting(true);
     setImportReport(null);
 
@@ -120,15 +159,15 @@ function LibraryPageInner() {
     };
 
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         const format = file.name.split('.').pop()?.toLowerCase() || '';
-        if (!['epub', 'pdf', 'mobi', 'azw3', 'azw', 'txt'].includes(format)) {
+        if (!SUPPORTED_FORMATS.includes(format)) {
           report.results.push({ name: file.name, status: 'failed', reason: '不支持的文件格式' });
           continue;
         }
 
         try {
-          const book = await importBookFile(file, selectedCategory || '未分类');
+          const book = await importBookFile(file, categoryOf(file));
           report.results.push({ name: file.name, title: book.title, format: book.format, status: 'success' });
         } catch (error) {
           report.results.push({
@@ -141,9 +180,18 @@ function LibraryPageInner() {
 
       report.finishedAt = Date.now();
       setImportReport(report);
-      await loadData();
+      await refetchLibrary();
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    try {
+      await runImport(Array.from(files), () => selectedCategory || '未分类');
+    } finally {
       e.target.value = '';
     }
   };
@@ -151,54 +199,17 @@ function LibraryPageInner() {
   const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-
-    setImporting(true);
-    setImportReport(null);
-
-    const report = {
-      total: files.length,
-      results: [] as Array<{
-        name: string;
-        title?: string;
-        format?: string;
-        status: 'success' | 'failed';
-        reason?: string;
-      }>,
-      startedAt: Date.now(),
-      finishedAt: null as number | null,
-    };
-
     try {
-      for (const file of Array.from(files)) {
-        const format = file.name.split('.').pop()?.toLowerCase() || '';
-        if (!['epub', 'pdf', 'mobi', 'azw3', 'azw', 'txt'].includes(format)) {
-          report.results.push({ name: file.name, status: 'failed', reason: '不支持的文件格式' });
-          continue;
-        }
-
+      await runImport(
+        Array.from(files),
         // 父目录名作为分类（与 batch_import.py 一致）；无目录结构时用当前选中分类
-        const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
-        const parts = rel.split('/');
-        const category =
-          parts.length >= 2 ? parts[parts.length - 2] : selectedCategory || '未分类';
-
-        try {
-          const book = await importBookFile(file, category);
-          report.results.push({ name: file.name, title: book.title, format: book.format, status: 'success' });
-        } catch (error) {
-          report.results.push({
-            name: file.name,
-            status: 'failed',
-            reason: (error as Error).message || '导入失败',
-          });
-        }
-      }
-
-      report.finishedAt = Date.now();
-      setImportReport(report);
-      await loadData();
+        (file) => {
+          const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+          const parts = rel.split('/');
+          return parts.length >= 2 ? parts[parts.length - 2] : selectedCategory || '未分类';
+        },
+      );
     } finally {
-      setImporting(false);
       e.target.value = '';
     }
   };
@@ -208,7 +219,7 @@ function LibraryPageInner() {
 
     try {
       await deleteBookCompletely(book);
-      await loadData();
+      await refetchLibrary();
       setActionError(null);
     } catch (error) {
       setActionError((error as Error).message || '删除书籍失败');
@@ -224,10 +235,10 @@ function LibraryPageInner() {
     }
 
     try {
-      const category = await addCategoryByName(name);
-      setCategories((prev) => [...prev, category]);
+      await addCategoryByName(name);
       setNewCategoryName('');
       setShowAddCategory(false);
+      await refetchLibrary();
     } catch (error) {
       alert((error as Error).message);
     }
@@ -244,7 +255,7 @@ function LibraryPageInner() {
     if (selectedCategory === category.name) {
       setSelectedCategory(null);
     }
-    await loadData();
+    await refetchLibrary();
   };
 
   const handleExport = async () => {
@@ -269,7 +280,7 @@ function LibraryPageInner() {
       try {
         const data = event.target?.result as string;
         await importData(data);
-        await loadData();
+        await refetchLibrary();
         alert('数据恢复成功！已与现有数据合并（不会删除现有条目）。');
       } catch (error) {
         alert('数据恢复失败：' + (error as Error).message);
@@ -305,7 +316,15 @@ function LibraryPageInner() {
     targets.forEach(async (book) => {
       const url = await getBookCoverUrl(book.id);
       if (!cancelled && url) {
-        setCoverUrls((prev) => (prev[book.id] ? prev : { ...prev, [book.id]: url }));
+        setCoverUrls((prev) => {
+          if (prev[book.id]) return prev;
+          // 请求期间书籍已被删除/移出书库 → 直接回收该 blob URL
+          if (!liveBookIdsRef.current.has(book.id)) {
+            URL.revokeObjectURL(url);
+            return prev;
+          }
+          return { ...prev, [book.id]: url };
+        });
       }
     });
     return () => {
@@ -761,7 +780,7 @@ function LibraryPageInner() {
           book={editingBook}
           categories={categories}
           onClose={() => setEditingBook(null)}
-          onSave={loadData}
+          onSave={() => void refetchLibrary()}
         />
       )}
     </div>

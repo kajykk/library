@@ -5,12 +5,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import case, func, literal_column, or_, select, text
+from sqlalchemy import case, false, func, literal_column, or_, select, text
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Document
 from ..services.search_index import fts_available
+from .documents import extract_keywords
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -23,6 +24,13 @@ class SearchHit(BaseModel):
     title: str
     type: str
     snippet: str
+
+
+class SearchSummary(BaseModel):
+    query: str
+    total: int
+    by_type: dict[str, int]
+    suggestions: list[str]
 
 
 def _escape_fts_query(q: str) -> str:
@@ -191,3 +199,136 @@ def search(
                 # 触发器同步异常时兜底 ILIKE
                 pass
     return _search_ilike(db, q, type, limit)
+
+
+def _fts_usable(q: str, terms: list[str]) -> bool:
+    """与 search 主路径一致的 FTS 可用性判定（短词回退 ILIKE）"""
+    if not fts_available():
+        return False
+    if any(0 < len(t) < 3 for t in terms):
+        return False
+    return len(q) >= 3
+
+
+_FTS_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM documents_fts f
+    JOIN documents d ON d.id = f.doc_id
+    WHERE documents_fts MATCH :match AND d.deleted_at IS NULL {type_clause}
+"""
+
+_FTS_BY_TYPE_SQL = """
+    SELECT d.type AS doc_type, COUNT(*)
+    FROM documents_fts f
+    JOIN documents d ON d.id = f.doc_id
+    WHERE documents_fts MATCH :match AND d.deleted_at IS NULL {type_clause}
+    GROUP BY d.type
+"""
+
+_FTS_TITLES_SQL = """
+    SELECT d.title
+    FROM documents_fts f
+    JOIN documents d ON d.id = f.doc_id
+    WHERE documents_fts MATCH :match AND d.deleted_at IS NULL {type_clause}
+    ORDER BY bm25(documents_fts, 0.0, 5.0, 1.0, 1.0, 1.0)
+    LIMIT 30
+"""
+
+
+@router.get("/summary", response_model=SearchSummary)
+def search_summary(
+    q: str = Query(min_length=1),
+    type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """搜索摘要：总命中数、按类型分布与相关词（供前端统计条，不返回逐条 snippet）"""
+    q = q.strip()
+    if not q:
+        return SearchSummary(query=q, total=0, by_type={}, suggestions=[])
+
+    dialect = db.get_bind().dialect.name
+    terms = [t for t in q.split() if t]
+
+    if dialect == "postgresql":
+        zh = literal_column("'zh'")
+        tsquery = func.plainto_tsquery(zh, q)
+        cond = literal_column("search_vector").op("@@")(tsquery)
+        base_where = [Document.deleted_at.is_(None), cond]
+        if type:
+            base_where.append(Document.type == type)
+        sub = select(Document).where(*base_where).subquery()
+        total = db.scalar(select(func.count()).select_from(sub)) or 0
+        by_type = dict(
+            db.execute(
+                select(sub.c.type, func.count()).group_by(sub.c.type)
+            ).all()
+        )
+        titles = [
+            row[0]
+            for row in db.execute(select(sub.c.title).limit(30)).all()
+        ]
+    elif _fts_usable(q, terms):
+        match_expr = " AND ".join(_escape_fts_query(t) for t in terms)
+        type_clause = "AND d.type = :doc_type" if type else ""
+        params: dict = {"match": match_expr}
+        if type:
+            params["doc_type"] = type
+        try:
+            total = db.execute(
+                text(_FTS_COUNT_SQL.format(type_clause=type_clause)), params
+            ).scalar() or 0
+            by_type = {
+                row[0]: row[1]
+                for row in db.execute(
+                    text(_FTS_BY_TYPE_SQL.format(type_clause=type_clause)), params
+                ).all()
+                if row[0]
+            }
+            titles = [
+                row[0]
+                for row in db.execute(
+                    text(_FTS_TITLES_SQL.format(type_clause=type_clause)), params
+                ).all()
+            ]
+        except Exception:
+            # FTS 同步异常时兜底 ILIKE 统计
+            total, by_type, titles = _ilike_stats(db, q, terms, type)
+    else:
+        total, by_type, titles = _ilike_stats(db, q, terms, type)
+
+    suggestions = _related_terms(titles, terms)
+    return SearchSummary(query=q, total=int(total), by_type={k: int(v) for k, v in by_type.items()}, suggestions=suggestions)
+
+
+def _ilike_stats(db: Session, q: str, terms: list[str], doc_type: str | None):
+    def any_field(field):
+        return or_(*[field.ilike(f"%{t}%") for t in terms]) if terms else false()
+
+    cond = or_(
+        any_field(Document.title),
+        any_field(Document.author),
+        any_field(Document.description),
+        any_field(Document.content),
+    )
+    where = [Document.deleted_at.is_(None), cond]
+    if doc_type:
+        where.append(Document.type == doc_type)
+    sub = select(Document).where(*where).subquery()
+    total = db.scalar(select(func.count()).select_from(sub)) or 0
+    by_type = dict(db.execute(select(sub.c.type, func.count()).group_by(sub.c.type)).all())
+    titles = [row[0] for row in db.execute(select(sub.c.title).limit(30)).all()]
+    return total, by_type, titles
+
+
+def _related_terms(titles: list[str], query_terms: list[str], top_n: int = 5) -> list[str]:
+    """相关词：命中文档标题中的高频关键词，排除与查询词重叠者"""
+    candidates = extract_keywords(" ".join(titles), top_n=top_n * 4)
+    lowered = [t.lower() for t in query_terms]
+    out: list[str] = []
+    for word in candidates:
+        if any(word in t or t in word for t in lowered):
+            continue
+        out.append(word)
+        if len(out) >= top_n:
+            break
+    return out

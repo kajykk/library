@@ -19,6 +19,12 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run backend tests
         run: pytest tests -q
+      # 依赖漏洞扫描：仅警告不阻断（已知告警可能来自无法升级的传递依赖）
+      - name: Audit Python dependencies (warnings only)
+        run: |
+          pip install pip-audit
+          pip-audit
+        continue-on-error: true
 
   frontend:
     runs-on: ubuntu-latest
@@ -34,6 +40,12 @@ jobs:
         run: npx tsc --noEmit
       - name: Lint
         run: npm run lint
+      - name: Unit tests (vitest)
+        run: npx vitest run
+      # 依赖漏洞扫描：仅警告不阻断（npm audit 对传递依赖常报无法修复的告警）
+      - name: Audit production dependencies (warnings only)
+        run: npm audit --omit=dev
+        continue-on-error: true
       - name: Build
         run: npm run build
 

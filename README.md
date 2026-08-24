@@ -62,6 +62,7 @@ npm run build && npm run start   # 生产
 | `KB_CORS_ORIGINS` | `http://localhost:3000` | 允许的前端来源 |
 | `KB_UPLOAD_MAX_SIZE_MB` | `100` | 上传体积上限 |
 | `KB_ENABLE_OCR` | `0` | 扫描版 PDF OCR(需 tesseract 二进制 + pymupdf/pytesseract/Pillow) |
+| `KB_AUTO_CLASSIFY_OCR` | `0` | 导入后后台 OCR 自动分类扫描件(需 pip install rapidocr-onnxruntime pymupdf) |
 | `KB_EXTRACT_TIMEOUT_S` | `5` | 单个文件正文提取时间预算 |
 
 ## 测试

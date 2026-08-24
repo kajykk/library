@@ -66,7 +66,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const [showBookSearch, setShowBookSearch] = useState(false);
   const [bookSearchQuery, setBookSearchQuery] = useState('');
   const [bookSearchResults, setBookSearchResults] = useState<
-    Array<{ chapter: number; title: string; snippet: string }>
+    Array<{ chapter: number; title: string; before: string; match: string; after: string }>
   >([]);
   const [searchTarget, setSearchTarget] = useState<{ chapter: number; query: string } | null>(null);
 
@@ -182,11 +182,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
         return;
       }
 
-      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.js');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-        'pdfjs-dist/legacy/build/pdf.worker.min.js',
-        import.meta.url,
-      ).toString();
+      // pdfjs-dist v4：legacy 构建仅提供 ESM 入口；worker 用 public 下同源 .mjs（v4 以 module worker 加载）
+      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
       const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
       const pdf = await loadingTask.promise;
@@ -460,17 +458,20 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       setBookSearchResults([]);
       return;
     }
-    const results: Array<{ chapter: number; title: string; snippet: string }> = [];
+    const results: Array<{ chapter: number; title: string; before: string; match: string; after: string }> = [];
     epubContent.forEach((ch, i) => {
       const div = document.createElement('div');
-      div.innerHTML = ch.content;
+      // 章节内容来自外部 EPUB/MOBI 文件，必须先经 DOMPurify 净化再解析，防止书内搜索路径注入脚本
+      div.innerHTML = DOMPurify.sanitize(ch.content);
       const text = (div.textContent || '').replace(/\s+/g, ' ');
       const idx = text.toLowerCase().indexOf(query.toLowerCase());
       if (idx >= 0) {
         results.push({
           chapter: i,
           title: ch.title,
-          snippet: `${text.slice(Math.max(0, idx - 30), idx)}<mark>${text.slice(idx, idx + query.length)}</mark>${text.slice(idx + query.length, idx + query.length + 40)}`,
+          before: text.slice(Math.max(0, idx - 30), idx),
+          match: text.slice(idx, idx + query.length),
+          after: text.slice(idx + query.length, idx + query.length + 40),
         });
       }
     });
@@ -777,10 +778,11 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
                       className="block w-full text-left px-3 py-2 hover:bg-primary-50 transition-colors border-b border-gray-50 last:border-0"
                     >
                       <p className="text-xs text-primary-600 truncate">{r.title}</p>
-                      <p
-                        className="text-xs text-gray-500 mt-0.5 line-clamp-2"
-                        dangerouslySetInnerHTML={{ __html: r.snippet }}
-                      />
+                      <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">
+                        {r.before}
+                        <mark>{r.match}</mark>
+                        {r.after}
+                      </p>
                     </button>
                   ))
                 )}

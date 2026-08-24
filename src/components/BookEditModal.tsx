@@ -18,9 +18,14 @@ export default function BookEditModal({ book, categories, onClose, onSave }: Boo
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await saveBookEdit(formData);
-    onSave();
-    onClose();
+    try {
+      await saveBookEdit(formData);
+      onSave();
+      onClose();
+    } catch (error) {
+      console.warn('保存书籍信息失败:', error);
+      alert('保存书籍信息失败：' + ((error as Error).message || '未知错误'));
+    }
   };
 
   const handleAddTag = () => {

@@ -4,8 +4,8 @@
 恢复：upsert 合并（保留 id），文件覆盖写入
 """
 
-import io
 import json
+import os
 import tempfile
 import uuid as uuid_mod
 import zipfile
@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
+from ..config import get_settings
 from ..database import get_db
 from ..models import (
     Annotation,
@@ -103,45 +104,72 @@ def _restore_value(column, value):
 
 @router.post("/restore", status_code=200)
 async def restore_backup(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """从 zip 备份恢复（upsert 合并，保留原 id；文件覆盖写入）"""
-    data = await file.read()
+    """从 zip 备份恢复（upsert 合并，保留原 id；文件覆盖写入）
+
+    上传体分块写入临时文件并施加与书籍上传一致的大小上限，避免超大包一次性读入内存。
+    """
+    max_bytes = get_settings().upload_max_size_mb * 1024 * 1024
+    fd, tmp_name = tempfile.mkstemp(suffix=".zip")
+    tmp_path = Path(tmp_name)
+    total = 0
     try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid zip file")
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Backup exceeds {get_settings().upload_max_size_mb} MB upload limit",
+                    )
+                out.write(chunk)
 
-    if META_NAME not in zf.namelist():
-        raise HTTPException(status_code=400, detail="meta.json missing in backup")
+        try:
+            zf = zipfile.ZipFile(tmp_path)
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="Invalid zip file")
 
-    meta = json.loads(zf.read(META_NAME))
+        # Windows 下必须先关闭句柄才能在 finally 中删除临时文件
+        try:
+            if META_NAME not in zf.namelist():
+                raise HTTPException(status_code=400, detail="meta.json missing in backup")
 
-    table_map = {
-        "collections": Collection,
-        "documents": Document,
-        "tags": Tag,
-        "document_tags": DocumentTag,
-        "annotations": Annotation,
-        "links": Link,
-        "reading_records": ReadingRecord,
-    }
+            meta = json.loads(zf.read(META_NAME))
 
-    restored = {}
-    for key, model in table_map.items():
-        rows = meta.get(key) or []
-        for row in rows:
-            obj = model(**{
-                c.name: _restore_value(c, row[c.name])
-                for c in model.__table__.columns
-                if c.name in row
-            })
-            db.merge(obj)
-        restored[key] = len(rows)
-    db.commit()
+            table_map = {
+                "collections": Collection,
+                "documents": Document,
+                "tags": Tag,
+                "document_tags": DocumentTag,
+                "annotations": Annotation,
+                "links": Link,
+                "reading_records": ReadingRecord,
+            }
 
-    files_restored = 0
-    for entry in set(zf.namelist()):
-        if entry.startswith(("files/", "covers/")) and not entry.endswith("/"):
-            file_storage.write_relative(entry, zf.read(entry))
-            files_restored += 1
+            restored = {}
+            for key, model in table_map.items():
+                rows = meta.get(key) or []
+                for row in rows:
+                    obj = model(**{
+                        c.name: _restore_value(c, row[c.name])
+                        for c in model.__table__.columns
+                        if c.name in row
+                    })
+                    db.merge(obj)
+                restored[key] = len(rows)
+            db.commit()
 
-    return {"restored": restored, "files_restored": files_restored}
+            files_restored = 0
+            for entry in set(zf.namelist()):
+                if entry.startswith(("files/", "covers/")) and not entry.endswith("/"):
+                    file_storage.write_relative(entry, zf.read(entry))
+                    files_restored += 1
+
+            return {"restored": restored, "files_restored": files_restored}
+        finally:
+            zf.close()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
