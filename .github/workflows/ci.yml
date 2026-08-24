@@ -16,13 +16,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
       - name: Run backend tests
-        run: pytest tests -q
+        run: python -m pytest tests -q
       # 依赖漏洞扫描：仅警告不阻断（已知告警可能来自无法升级的传递依赖）
       - name: Audit Python dependencies (warnings only)
         run: |
-          pip install pip-audit
+          python -m pip install pip-audit
           pip-audit
         continue-on-error: true
 
@@ -58,7 +58,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install backend dependencies
-        run: pip install -r server/requirements.txt
+        run: python -m pip install -r server/requirements-dev.txt
       - uses: actions/setup-node@v4
         with:
           node-version: 20
