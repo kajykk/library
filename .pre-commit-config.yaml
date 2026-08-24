@@ -1,0 +1,8 @@
+﻿repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged secrets scan)
+        entry: E:/code/.tools/gitleaks.exe protect --staged --redact -v
+        language: system
+        pass_filenames: false
