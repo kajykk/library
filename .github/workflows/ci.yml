@@ -67,5 +67,7 @@ jobs:
         run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+      - name: Build frontend (next start 需要 .next 产物)
+        run: npm run build
       - name: Run e2e smoke tests
         run: npm run test:e2e
