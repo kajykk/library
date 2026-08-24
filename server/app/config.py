@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     auto_create_tables: bool = True
     # 仅测试/e2e 使用：允许剪藏本机地址（默认关闭，SSRF 防护仍保留 http/https + 主机名校验）
     allow_local_clip: bool = False
+    # 导入后后台 OCR 分类：扫描件（无可读文本）采样页 OCR 后再归类（较重，默认关闭）
+    auto_classify_ocr: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

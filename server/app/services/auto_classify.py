@@ -5,8 +5,7 @@
 """
 
 # 规则按优先级从高到低：更具体的分类排前面，先命中者生效
-RULES = [
-    ("考研资料", ["考研", "gre 考试", "gre考试", "雅思", "托福", "四六级", "英语语法", "词汇"]),
+RULES = [    ("考研资料", ["考研", "gre 考试", "gre考试", "雅思", "托福", "四六级", "英语语法", "词汇"]),
     ("抑郁症医疗", ["抑郁", "双相"]),
     ("学校招生", ["招生"]),
     ("简历", ["简历", "cv"]),
@@ -22,21 +21,21 @@ RULES = [
     ("经济政治", [
         "经济", "經濟", "金融", "投资", "投資", "股票", "理财", "财富", "货币",
         "资本", "政治", "权力", "国家", "民主", "资本主义", "社会主义", "商业",
-        "创业", "社会", "社会学", "法律", "税", "诈骗", "economy", "economics",
+        "创业", "社会学", "法律", "税", "诈骗", "economy", "economics",
         "达利欧",
     ]),
     ("历史", ["历史", "歷史", "史话", "朝代", "战争", "二战", "一战", "罗马", "唐朝", "宋朝", "明朝", "清朝", "帝国", "革命"]),
     ("心理学", [
-        "心理", "情绪", "焦虑", "人格", "认知", "行为学", "行为科学", "精神分析", "精神",
-        "冥想", "正念", "自控", "记忆", "情商", "性格", "潜意识", "psychology",
+        "心理", "情绪", "焦虑", "人格", "认知", "行为学", "行为科学", "精神分析",
+        "冥想", "正念", "自控", "记忆", "情商", "潜意识", "psychology",
         "neuroscience", "mind", "mental", "self illusion", "马斯洛",
     ]),
     ("健康生活", ["健康", "饮食", "运动", "健身", "医学", "疾病", "养生", "跑步", "瑜伽", "睡眠", "营养", "食谱", "烹饪"]),
-    ("自我成长", ["成长", "自律", "效率", "时间管理", "沟通", "演讲", "领导力", "成功", "励志", "习惯", "目标", "说话", "聊天", "conversation"]),
+    ("自我成长", ["成长", "自律", "效率", "时间管理", "沟通", "演讲", "领导力", "成功", "励志", "习惯", "目标", "conversation"]),
     ("哲学", [
         "哲学", "思想", "伦理", "尼采", "康德", "叔本华", "海德格尔", "存在主义",
         "苏格拉底", "柏拉图", "亚里士多德", "悖论", "形而上学", "逻辑学", "世界观",
-        "自由", "理学", "福柯", "庄子", "老子", "philosophy", "stoic",
+        "自由", "福柯", "庄子", "老子", "philosophy", "stoic",
     ]),
     ("文学小说", ["小说", "散文", "诗集", "诗选", "童话", "寓言", "侦探", "东野圭吾", "马伯庸", "略萨", "村上春树"]),
     ("文学", ["文学", "自传", "传记", "回忆录", "游记", "随笔", "诗歌", "memoir", "biography"]),
@@ -55,4 +54,44 @@ def classify(title: str, author: str = "", extra: str = "") -> str | None:
         for kw in keywords:
             if kw in text:
                 return target
+    return None
+
+
+SCORE_THRESHOLD = 4
+MARGIN_FACTOR = 1.5
+
+
+def classify_by_content(title: str, author: str, sample: str) -> str | None:
+    """正文词频打分：命中关键词越多、关键词越长越可信。
+
+    要求：1) 最高分 ≥ SCORE_THRESHOLD；2) 最高分 ≥ 1.5×次高分（领先度兜底，
+    防止小说/纪实中泛化词（对话、情绪、思想等）把书分错类）。
+    与宿主机脚本 server/reclassify_by_content.py 的 score_classify 保持一致。
+    """
+    text = f"{title} {author} {sample}".lower()
+    best, best_score, second = None, 0, 0
+    for target, keywords in RULES:
+        score = 0
+        for kw in keywords:
+            if len(kw) < 2:
+                continue
+            n = text.count(kw)
+            if n:
+                score += n * (len(kw) * 2 if len(kw) >= 3 else 1)
+        if score > best_score:
+            best, best_score, second = target, score, best_score
+        elif score > second:
+            second = score
+    if best_score >= SCORE_THRESHOLD and best_score >= MARGIN_FACTOR * second:
+        return best
+    return None
+
+
+def classify_document(title: str, author: str = "", sample: str = "") -> str | None:
+    """导入文档分级分类：先标题/作者关键词（快），再正文词频打分（准）"""
+    target = classify(title, author)
+    if target:
+        return target
+    if sample:
+        return classify_by_content(title, author, sample)
     return None

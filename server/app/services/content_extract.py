@@ -21,7 +21,7 @@ EXTRACT_TIMEOUT = 5  # 单个文件提取时间预算（秒），超时跳过，
 OCR_TIMEOUT = 90  # OCR 通道独立预算（分钟级）
 OCR_MAX_PAGES = 20
 
-TEXT_FORMATS = {"epub", "pdf", "txt", "md", "html"}
+TEXT_FORMATS = {"epub", "pdf", "txt", "md", "html", "mobi", "azw", "azw3"}
 
 
 def _bounded(fn, timeout: float = EXTRACT_TIMEOUT) -> str:
@@ -165,7 +165,8 @@ def _extract_epub(path: Path) -> str:
             except KeyError:
                 continue
             try:
-                tree = lxml_html.fromstring(raw.decode("utf-8", "ignore"))
+                # 必须传 bytes：xhtml 带 <?xml encoding?> 声明时 lxml 拒绝 str 输入
+                tree = lxml_html.fromstring(raw)
             except Exception:
                 continue
             text = re.sub(r"\s+", " ", tree.text_content() or "").strip()
@@ -177,11 +178,35 @@ def _extract_epub(path: Path) -> str:
         return "\n\n".join(parts)[:MAX_CHARS]
 
 
+def _extract_mobi(path: Path) -> str:
+    """MOBI/AZW 解包：mobi 库解出 html 后按 HTML 提取（Huffman/PalmDOC 压缩均支持）"""
+    try:
+        import mobi
+    except ImportError:
+        logger.info("MOBI 依赖未安装（pip install mobi），跳过: %s", path)
+        return ""
+    try:
+        tmpdir, filepath = mobi.extract(str(path))
+    except Exception as exc:
+        logger.warning("MOBI 解包失败 %s: %s", path, exc)
+        return ""
+    try:
+        out = Path(filepath)
+        if out.suffix.lower() == ".epub":
+            # mobi8/azw3 解出的是 EPUB 容器，按 EPUB 提取
+            return _extract_epub(out)
+        return _extract_html_bytes(out)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _extract(fmt: str, path: Path) -> str:
     if fmt == "pdf":
         return _extract_pdf(path, ocr=_ocr_available())
     if fmt == "epub":
         return _extract_epub(path)
+    if fmt in ("mobi", "azw", "azw3"):
+        return _extract_mobi(path)
     return _read_text(path)
 
 
