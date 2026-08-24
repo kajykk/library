@@ -68,13 +68,22 @@ test.describe('功能扩展冒烟', () => {
 
     // 返回书架：进度已持久化（2 章读完 → 100%）
     await page.getByTitle('返回书架').click();
+    // 诊断增强：记录轮询期间服务端与页面两侧的进度值
+    const diag: string[] = [];
     await expect.poll(async () => {
       const resp = await request.get('http://localhost:8111/api/documents', {
         headers: { 'X-API-Token': 'e2e-token' },
       });
-      const docs = (await resp.json()) as Array<{ title: string; read_progress?: number }>;
-      return (docs.find((d) => d.title === 'E2E 测试书')?.read_progress ?? 0) * 100;
+      const docs = (await resp.json()) as Array<{ id: string; title: string; read_progress?: number }>;
+      const doc = docs.find((d) => d.title === 'E2E 测试书');
+      let uiText = '';
+      try {
+        uiText = (await page.getByText(/已读 \d+%/).allTextContents()).join(',');
+      } catch { /* ignore */ }
+      diag.push(`api=${doc?.read_progress ?? 'missing'} id=${doc?.id ?? '-'} ui=[${uiText}] docs=${docs.length}`);
+      return (doc?.read_progress ?? 0) * 100;
     }, { timeout: 30_000 }).toBe(100);
+    test.info().attach('progress-diagnosis', { body: diag.join('\n'), contentType: 'text/plain' });
   });
 
   test('命令面板剪藏网页', async ({ page, request }) => {
