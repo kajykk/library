@@ -73,6 +73,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const contentRef = useRef<HTMLDivElement>(null);
   const txtLinesRef = useRef<string[] | null>(null);
   const pdfDocRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(null);
+  // 追踪在途的进度保存，关闭阅读器前等待其落地，避免书架首拉读到旧值
+  const lastSaveRef = useRef<Promise<unknown>>(Promise.resolve());
   // PDF 页面渲染缓存（dataURL，最多保留 12 页）+ 渲染序号防快速翻页乱序
   const pdfPageCache = useRef(new Map<number, string>());
   const pdfRenderSeq = useRef(0);
@@ -80,6 +82,24 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const currentPageRef = useRef<number>(initialPosition);
   const initialPositionRef = useRef<number>(initialPosition);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleClose = useCallback(async () => {
+    // 滚动模式的防抖保存若已排队，先触发再等待
+    if (scrollSaveTimerRef.current) {
+      clearTimeout(scrollSaveTimerRef.current);
+      scrollSaveTimerRef.current = null;
+      const idx = currentPageRef.current;
+      const progress =
+        epubContent.length > 0 ? Math.round(((idx + 1) / epubContent.length) * 100) : 0;
+      lastSaveRef.current = saveReadingProgress(book.id, Math.min(100, progress), idx);
+    }
+    try {
+      await lastSaveRef.current;
+    } catch {
+      // 保存失败不阻塞退出（离线队列已接管）
+    }
+    onClose();
+  }, [book.id, currentPageRef, epubContent.length, onClose]);
 
   useEffect(() => {
     const bookId = book.id;
@@ -305,7 +325,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     const progress = totalPages > 0
       ? Math.round(((isPdf ? target : target + 1) / totalPages) * 100)
       : 0;
-    await saveReadingProgress(book.id, Math.min(100, progress), target);
+    lastSaveRef.current = saveReadingProgress(book.id, Math.min(100, progress), target);
+    await lastSaveRef.current;
   }, [book.format, book.id, currentPage, epubContent, totalPages]);
 
   const handleAddBookmark = async () => {
@@ -532,7 +553,11 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
           scrollSaveTimerRef.current = setTimeout(() => {
             const progress =
               epubContent.length > 0 ? Math.round(((idx + 1) / epubContent.length) * 100) : 0;
-            saveReadingProgress(book.id, Math.min(100, progress), idx).catch(() => undefined);
+            lastSaveRef.current = saveReadingProgress(
+              book.id,
+              Math.min(100, progress),
+              idx,
+            ).catch(() => undefined);
           }, 1000);
         }
       },
@@ -570,7 +595,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       } else if (showSidebar) {
         setShowSidebar(false);
       } else {
-        onClose();
+        void handleClose();
       }
       return;
     }
@@ -621,7 +646,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white">
         <div className="flex items-center gap-3">
           <button
-            onClick={onClose}
+            onClick={() => void handleClose()}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
             title="返回书架"
           >

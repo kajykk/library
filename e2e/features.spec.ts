@@ -72,8 +72,8 @@ test.describe('功能扩展冒烟', () => {
       const resp = await request.get('http://localhost:8111/api/documents', {
         headers: { 'X-API-Token': 'e2e-token' },
       });
-      const docs = (await resp.json()) as Array<{ title: string; readProgress?: number }>;
-      return docs.find((d) => d.title === 'E2E 测试书')?.readProgress ?? 0;
+      const docs = (await resp.json()) as Array<{ title: string; read_progress?: number }>;
+      return (docs.find((d) => d.title === 'E2E 测试书')?.read_progress ?? 0) * 100;
     }, { timeout: 30_000 }).toBe(100);
   });
 
