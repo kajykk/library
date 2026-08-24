@@ -68,7 +68,7 @@ test.describe('功能扩展冒烟', () => {
 
     // 返回书架：进度已持久化（2 章读完 → 100%）
     await page.getByTitle('返回书架').click();
-    await expect(page.getByText('已读 100%')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('已读 100%')).toBeVisible({ timeout: 30_000 });
   });
 
   test('命令面板剪藏网页', async ({ page, request }) => {

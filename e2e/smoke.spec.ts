@@ -28,8 +28,8 @@ test.describe('核心链路冒烟', () => {
     // 4) 新建笔记 + 实时协作连接 + 保存
     await cleanupNotes(request);
     await page.goto('/notes');
-    await page.getByRole('button', { name: '新建笔记' }).click();
-    await page.getByRole('button', { name: '📄空白笔记' }).click();
+    await page.getByRole('button', { name: '模板新建' }).click();
+    await page.getByRole('button', { name: '空白笔记' }).click();
     await page.getByPlaceholder('笔记标题').fill('E2E 冒烟笔记');
     await expect(page.getByText('已连接')).toBeVisible({ timeout: 20_000 });
     await page.locator('.ProseMirror').click();
@@ -37,6 +37,8 @@ test.describe('核心链路冒烟', () => {
 
     // 返回列表并确认已保存
     await page.getByRole('button', { name: '返回列表' }).click();
+    await expect(page.getByPlaceholder('搜索笔记标题或标签…')).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder('搜索笔记标题或标签…').fill('E2E 冒烟笔记');
     await expect(page.getByText('E2E 冒烟笔记')).toBeVisible({ timeout: 15_000 });
 
     // 5) 全文检索命中书籍正文与笔记
