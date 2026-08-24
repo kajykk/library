@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 
@@ -22,17 +22,25 @@ function removeRetry(target: string, attempts = 3) {
 }
 
 /**
- * 清理上一次运行残留的临时库/数据目录（server/e2e-*.db、server/e2e-data-*）
+ * 清理上一次运行残留的临时库/数据目录（server/e2e-*.db、server/e2e-data-*）。
+ * 注意：webServer 在本函数之前已启动并创建了当前运行的 e2e-<run_id>.db，
+ * 因此跳过 5 分钟内新建的文件，避免误删当前运行正在使用的数据库。
  */
 function cleanupPreviousRun() {
   const serverDir = path.join(__dirname, '..', 'server');
   if (!existsSync(serverDir)) return;
+  const cutoff = Date.now() - 5 * 60 * 1000;
   let removed = 0;
   for (const name of readdirSync(serverDir)) {
-    if (/^e2e-.*\.db$/.test(name) || /^e2e-data-/.test(name)) {
-      removeRetry(path.join(serverDir, name));
-      removed += 1;
+    if (!/^e2e-.*\.db$/.test(name) && !/^e2e-data-/.test(name)) continue;
+    const full = path.join(serverDir, name);
+    try {
+      if (statSync(full).mtimeMs > cutoff) continue;
+    } catch {
+      continue;
     }
+    removeRetry(full);
+    removed += 1;
   }
   if (removed > 0) console.log(`[e2e] cleaned ${removed} leftover artifact(s)`);
 }
