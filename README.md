@@ -11,6 +11,11 @@
 - **知识图谱**：文档/标签关系图、占位提及诊断、统计面板
 - **运维**：后台全文索引重建(每文件 5s 预算跳过扫描版 PDF)、SHA-256 去重、备份/恢复(ZIP)、剪藏、限流
 
+## API 行为注记
+
+- **列表轻量化**：`GET /api/documents` 默认 `include_content=false`，`content` 仅返回压平空白后的 **200 字摘要**(超出截断加 `…`)，全文走 `GET /api/documents/{id}` 详情接口;`include_content=true` 向后兼容返回全文。分页 `limit` 上限 **500**(`le=500`)。
+- **e2e 前置构建**：Playwright 冒烟测试用 `next start` 起前端,需先 `npm run build`;CI 的 e2e job 已内置该构建步骤。
+
 ## 目录结构
 
 ```
@@ -73,7 +78,7 @@ npm run lint && npx tsc --noEmit && npm run build   # 前端静态检查
 npm run test:e2e                            # Playwright 冒烟(本机用 Edge;CI 用 chromium)
 ```
 
-e2e 每次运行使用全新临时库(`server/e2e-*.db`),不污染真实数据;需先 `npm run build`。
+e2e 每次运行使用全新临时库(`server/e2e-*.db`),不污染真实数据;需先 `npm run build`(CI 已内置)。
 
 ## 真实库迁移
 
