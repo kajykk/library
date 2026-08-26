@@ -1,8 +1,7 @@
-﻿repos:
-  - repo: local
+﻿# 官方 gitleaks hook：rev 固定、入口自动由 pre-commit 环境安装，
+# 不再依赖本机绝对路径（E:/code/.tools/gitleaks.exe 换机即坏）。
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
     hooks:
       - id: gitleaks
-        name: gitleaks (staged secrets scan)
-        entry: E:/code/.tools/gitleaks.exe protect --staged --redact -v
-        language: system
-        pass_filenames: false
