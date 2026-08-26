@@ -5,7 +5,6 @@ import DOMPurify from 'dompurify';
 import { Book } from '@/lib/db';
 import {
   getFileArrayBuffer,
-  saveReadingProgress,
   saveReadingSession,
   listAnnotations,
   addBookmarkAnnotation,
@@ -20,6 +19,8 @@ import {
   ParsedChapter,
 } from '@/lib/parsers/foliate';
 import { useDialog, useToast } from '@/components/ui';
+import { useReadingProgress } from './reader/hooks/useReadingProgress';
+import { useReaderShortcuts } from './reader/hooks/useReaderShortcuts';
 import {
   ChevronLeft,
   ChevronRight, 
@@ -78,8 +79,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const pdfDocRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(null);
   // PDF 生命周期清理：退出阅读器时销毁文档与 loadingTask，释放 pdf.js worker 内存
   const pdfCleanupRef = useRef<(() => void) | null>(null);
-  // 追踪在途的进度保存，关闭阅读器前等待其落地，避免书架首拉读到旧值
-  const lastSaveRef = useRef<Promise<unknown>>(Promise.resolve());
+  // 追踪在途的进度保存已抽离至 useReadingProgress（save/flush）
   // PDF 页面渲染缓存（dataURL，最多保留 12 页）+ 渲染序号防快速翻页乱序
   const pdfPageCache = useRef(new Map<number, string>());
   const pdfRenderSeq = useRef(0);
@@ -87,6 +87,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const currentPageRef = useRef<number>(initialPosition);
   const initialPositionRef = useRef<number>(initialPosition);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 进度保存（在途登记 + 退出前 flush）抽离至 useReadingProgress
+  const { save: saveProgress, flush: flushProgress } = useReadingProgress(book.id);
 
   const handleClose = useCallback(async () => {
     // 滚动模式的防抖保存若已排队，先触发再等待
@@ -96,15 +99,11 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const idx = currentPageRef.current;
       const progress =
         epubContent.length > 0 ? Math.round(((idx + 1) / epubContent.length) * 100) : 0;
-      lastSaveRef.current = saveReadingProgress(book.id, Math.min(100, progress), idx);
+      saveProgress(progress, idx);
     }
-    try {
-      await lastSaveRef.current;
-    } catch {
-      // 保存失败不阻塞退出（离线队列已接管）
-    }
+    await flushProgress();
     onClose();
-  }, [book.id, currentPageRef, epubContent.length, onClose]);
+  }, [epubContent.length, flushProgress, onClose, saveProgress]);
 
   useEffect(() => {
     const bookId = book.id;
@@ -349,9 +348,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     const progress = totalPages > 0
       ? Math.round(((isPdf ? target : target + 1) / totalPages) * 100)
       : 0;
-    lastSaveRef.current = saveReadingProgress(book.id, Math.min(100, progress), target);
-    await lastSaveRef.current;
-  }, [book.format, book.id, currentPage, epubContent, totalPages]);
+    await saveProgress(progress, target);
+  }, [book.format, currentPage, epubContent, saveProgress, totalPages]);
 
   const handleAddBookmark = async () => {
     const note = isChapteredFormat(book.format) && epubContent[currentChapter]
@@ -610,11 +608,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
           scrollSaveTimerRef.current = setTimeout(() => {
             const progress =
               epubContent.length > 0 ? Math.round(((idx + 1) / epubContent.length) * 100) : 0;
-            lastSaveRef.current = saveReadingProgress(
-              book.id,
-              Math.min(100, progress),
-              idx,
-            ).catch(() => undefined);
+            saveProgress(progress, idx);
           }, 1000);
         }
       },
@@ -637,42 +631,6 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollMode]);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // 输入框/编辑器聚焦时不劫持按键（书内搜索、页码输入等）
-    const target = e.target as HTMLElement | null;
-    const isTyping =
-      !!target &&
-      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
-    if (e.key === 'Escape') {
-      // 逐层关闭浮层，最后才退出阅读器
-      if (showBookSearch) {
-        setShowBookSearch(false);
-      } else if (showChapterList) {
-        setShowChapterList(false);
-      } else if (showSidebar) {
-        setShowSidebar(false);
-      } else {
-        void handleClose();
-      }
-      return;
-    }
-    if (isTyping) return;
-    // 带修饰键的组合键一律放行：不劫持浏览器/系统快捷键（Ctrl+F 查找、Ctrl+S 保存、Ctrl+P 打印等）
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'ArrowLeft') {
-      handlePageChange(currentPage - 1);
-    } else if (e.key === 'ArrowRight') {
-      handlePageChange(currentPage + 1);
-    } else if (e.key.toLowerCase() === 'f') {
-      e.preventDefault();
-      toggleFullscreen();
-    } else if (e.key.toLowerCase() === 's' && isChapteredFormat(book.format)) {
-      e.preventDefault();
-      setShowBookSearch((v) => !v);
-      if (showBookSearch) setBookSearchQuery('');
-    }
-  }, [currentPage, handlePageChange, onClose, showBookSearch, showChapterList, showSidebar, book.format]);
-
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen();
@@ -681,10 +639,34 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     }
   }, []);
 
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+  // 快捷键分发抽离至 useReaderShortcuts（Escape 分层关闭 → 翻页/全屏/书内搜索）
+  useReaderShortcuts({
+    onEscape: () => {
+      // 逐层关闭浮层，最后才退出阅读器
+      if (showBookSearch) {
+        setShowBookSearch(false);
+        return true;
+      }
+      if (showChapterList) {
+        setShowChapterList(false);
+        return true;
+      }
+      if (showSidebar) {
+        setShowSidebar(false);
+        return true;
+      }
+      return false;
+    },
+    onClose: () => void handleClose(),
+    onPageChange: (delta) => handlePageChange(currentPage + delta),
+    onToggleFullscreen: toggleFullscreen,
+    onToggleBookSearch: () => {
+      if (!isChapteredFormat(book.format)) return false;
+      setShowBookSearch((v) => !v);
+      if (showBookSearch) setBookSearchQuery('');
+      return true;
+    },
+  });
 
   // 书籍内容来自外部文件，必须经 DOMPurify 白名单净化，防止恶意 EPUB/MOBI 注入脚本
   const sanitizedHtml = useMemo(
