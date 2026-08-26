@@ -23,17 +23,15 @@ import { useReadingProgress } from './reader/hooks/useReadingProgress';
 import { useReaderShortcuts } from './reader/hooks/useReaderShortcuts';
 import {
   ChevronLeft,
-  ChevronRight, 
-  Bookmark as BookmarkIcon, 
+  ChevronRight,
   BookmarkPlus,
-  Plus,
-  Trash2,
   PanelLeftClose,
   PanelLeftOpen,
   Highlighter,
   Search,
   X,
 } from 'lucide-react';
+import AnnotationsSidebar from './reader/panels/AnnotationsSidebar';
 
 interface BookReaderProps {
   book: Book;
@@ -595,6 +593,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     if (!container) return;
 
     const sections = Array.from(container.querySelectorAll('section[data-chapter]'));
+    // 环境防御：极老 webview / 测试环境可能无 IntersectionObserver，
+    // 此时仅失去自动进度跟踪，滚动阅读与手动翻页仍可用
+    if (typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -623,9 +624,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     if (!scrollMode || epubContent.length === 0) return;
     const idx = Math.min(Math.max(currentChapter, 0), epubContent.length - 1);
     const timer = setTimeout(() => {
-      contentRef.current
-        ?.querySelector(`section[data-chapter="${idx}"]`)
-        ?.scrollIntoView({ block: 'start' });
+      const section = contentRef.current?.querySelector(`section[data-chapter="${idx}"]`);
+      // scrollIntoView 在 jsdom/极老环境可能缺失，可选调用避免抛错
+      section?.scrollIntoView?.({ block: 'start' });
     }, 80);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -958,143 +959,19 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
 
         {/* Sidebar */}
         {showSidebar && (
-          <aside className="w-80 border-l border-gray-200 bg-gray-50 flex flex-col">
-            <div className="flex border-b border-gray-200">
-              <button
-                onClick={() => setSidebarTab('bookmarks')}
-                className={`flex-1 py-3 text-sm font-medium transition-colors ${
-                  sidebarTab === 'bookmarks'
-                    ? 'text-primary-600 border-b-2 border-primary-600 bg-white'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                书签 ({annotations.filter(a => a.type === 'bookmark').length})
-              </button>
-              <button
-                onClick={() => setSidebarTab('annotations')}
-                className={`flex-1 py-3 text-sm font-medium transition-colors ${
-                  sidebarTab === 'annotations'
-                    ? 'text-primary-600 border-b-2 border-primary-600 bg-white'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                批注 ({annotations.filter(a => a.type !== 'bookmark').length})
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4">
-              {sidebarTab === 'bookmarks' ? (
-                <div className="space-y-2">
-                  {annotations.filter(a => a.type === 'bookmark').length === 0 ? (
-                    <p className="text-center text-gray-400 py-8">暂无书签</p>
-                  ) : (
-                    annotations.filter(a => a.type === 'bookmark').map(bookmark => (
-                      <div
-                        key={bookmark.id}
-                        className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 group"
-                      >
-                        <button
-                          onClick={() => handlePageChange(bookmark.chapter)}
-                          className="flex items-center gap-2 flex-1 text-left"
-                        >
-                          <BookmarkIcon className="w-4 h-4 text-primary-500" />
-                          <div>
-                            <p className="text-sm font-medium">{bookmark.content}</p>
-                            <p className="text-xs text-gray-400">
-                              {new Date(bookmark.createdAt).toLocaleDateString('zh-CN')}
-                            </p>
-                          </div>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteAnnotation(bookmark)}
-                          className="p-1 opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded transition-all"
-                        >
-                          <Trash2 className="w-3 h-3 text-red-500" />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <button
-                    onClick={() => setShowNoteInput(!showNoteInput)}
-                    className="w-full flex items-center justify-center gap-2 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
-                  >
-                    <Plus className="w-4 h-4" />
-                    添加笔记
-                  </button>
-
-                  {showNoteInput && (
-                    <div className="bg-white p-3 rounded-lg border border-gray-200">
-                      <textarea
-                        value={newNoteContent}
-                        onChange={(e) => setNewNoteContent(e.target.value)}
-                        placeholder="输入笔记内容..."
-                        className="w-full h-24 px-3 py-2 border border-gray-300 rounded resize-none focus:ring-2 focus:ring-primary-500 outline-none text-sm"
-                      />
-                      <div className="flex justify-end gap-2 mt-2">
-                        <button
-                          onClick={() => setShowNoteInput(false)}
-                          className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded transition-colors"
-                        >
-                          取消
-                        </button>
-                        <button
-                          onClick={handleAddNote}
-                          className="px-3 py-1 text-sm bg-primary-600 text-white rounded hover:bg-primary-700 transition-colors"
-                        >
-                          保存
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {annotations.filter(a => a.type !== 'bookmark').length === 0 ? (
-                    <p className="text-center text-gray-400 py-8">
-                      暂无批注
-                      {HIGHLIGHT_SUPPORT ? '，选中正文即可划线' : ''}
-                    </p>
-                  ) : (
-                    annotations.filter(a => a.type !== 'bookmark').map(ann => (
-                      <div
-                        key={ann.id}
-                        className="bg-white p-3 rounded-lg border border-gray-200 group"
-                      >
-                        {ann.type === 'highlight' ? (
-                          <p className="text-sm text-gray-500 border-l-4 border-yellow-300 pl-2 italic">
-                            {ann.quote}
-                          </p>
-                        ) : null}
-                        {ann.content ? (
-                          <p className={`text-sm text-gray-700 ${ann.type === 'highlight' ? 'mt-1' : ''}`}>{ann.content}</p>
-                        ) : null}
-                        <div className="flex items-center justify-between mt-2">
-                          <span className="text-xs text-gray-400">
-                            {ann.type === 'highlight' ? '划线' : `第 ${ann.page} 页`} · {new Date(ann.createdAt).toLocaleDateString('zh-CN')}
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handlePageChange(ann.chapter)}
-                              className="text-xs text-primary-600 hover:underline opacity-0 group-hover:opacity-100 transition-all"
-                            >
-                              跳转
-                            </button>
-                            <button
-                              onClick={() => handleDeleteAnnotation(ann)}
-                              className="p-1 opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded transition-all"
-                            >
-                              <Trash2 className="w-3 h-3 text-red-500" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-          </aside>
+          <AnnotationsSidebar
+            annotations={annotations}
+            tab={sidebarTab}
+            onTabChange={setSidebarTab}
+            showNoteInput={showNoteInput}
+            onToggleNoteInput={() => setShowNoteInput(!showNoteInput)}
+            newNoteContent={newNoteContent}
+            onNewNoteContentChange={setNewNoteContent}
+            onAddNote={handleAddNote}
+            onJump={(position) => handlePageChange(position)}
+            onDelete={handleDeleteAnnotation}
+            highlightSupported={HIGHLIGHT_SUPPORT}
+          />
         )}
       </div>
 
