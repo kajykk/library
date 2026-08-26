@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from 'tiptap-markdown';
@@ -116,6 +117,8 @@ function NoteEditorView({
 
   const { backlinks, unlinked, allTitles, suggestedLinks, refreshBacklinks, removeUnlinked } = useNoteRelations(note.id, note.title);
 
+  const queryClient = useQueryClient();
+
   const { schedule: scheduleSave, flush: flushSave } = useDebouncedSave({
     docId: note.id,
     titleRef,
@@ -193,9 +196,16 @@ function NoteEditorView({
         const target = (event.target as HTMLElement).closest('.kb-wikilink') as HTMLElement | null;
         if (!target) return false;
         const title = target.getAttribute('data-title') || '';
+        if (!title) return false;
         const rect = target.getBoundingClientRect();
         setWikilinkPreview({ title, x: rect.left, y: rect.bottom + 6, doc: null });
-        listDocuments({ q: title, include_content: 'false' })
+        // fetchQuery：并发同标题点击去重 + 60s 缓存（此前每次点击都打一次搜索接口）
+        queryClient
+          .fetchQuery({
+            queryKey: ['doc-by-title', title],
+            queryFn: () => listDocuments({ q: title, include_content: 'false' }),
+            staleTime: 60_000,
+          })
           .then((docs) => {
             const found = docs.find((d) => d.title === title);
             setWikilinkPreview((prev) =>

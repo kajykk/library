@@ -99,7 +99,11 @@ describe('escapeFtsQuery', () => {
     expect(escapeFtsQuery('say "hi"')).toBe('"say ""hi"""');
   });
 
-  it('空字符串仍返回合法的空短语查询', () => {
-    expect(escapeFtsQuery('')).toBe('""');
+  it('空字符串返回空串（`""` 在 FTS5 中是语法错误，调用方应过滤空查询）', () => {
+    expect(escapeFtsQuery('')).toBe('');
+  });
+
+  it('内部引号双写转义', () => {
+    expect(escapeFtsQuery('say "hi"')).toBe('"say ""hi"""');
   });
 });

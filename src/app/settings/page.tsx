@@ -183,6 +183,16 @@ export default function SettingsPage() {
   };
 
   const handleMigrate = async () => {
+    // 二次确认：迁移接口无幂等键，重复执行会产生整包重复条目（文案亦已提示）
+    const ok = await dialog.confirm({
+      title: '开始迁移？',
+      message:
+        '将把本地浏览器中的全部书目/批注/阅读记录一次性导入后端。\n\n' +
+        '注意：迁移不幂等——若之前已成功迁移过，再次执行会产生重复书籍。确认本地数据尚未迁移过再继续。',
+      confirmText: '我已知晓，开始迁移',
+    });
+    if (!ok) return;
+
     setMigration({ status: 'running', progress: { done: 0, total: 0 }, summary: null, errors: [] });
     try {
       await initDB();

@@ -116,6 +116,25 @@ function NotesPageInner() {
 
   const refetchNotes = () => queryClient.invalidateQueries({ queryKey: ['documents', listType] });
 
+  // 模板菜单：点击菜单区域外或按 Escape 时关闭
+  useEffect(() => {
+    if (!showTemplateMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-template-menu-root]')) return;
+      setShowTemplateMenu(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowTemplateMenu(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showTemplateMenu]);
+
   const toggleSelectedNote = (id: string) => {
     setSelectedNotes((prev) => {
       const next = new Set(prev);
@@ -378,7 +397,7 @@ function NotesPageInner() {
               <h2 className="text-sm font-semibold text-gray-900">快速新建</h2>
               <p className="text-xs text-gray-500 mt-1">先捕获，再整理。适合会议纪要、临时灵感与待办。</p>
             </div>
-            <div className="relative">
+            <div className="relative" data-template-menu-root>
               <button
                 onClick={() => setShowTemplateMenu((v) => !v)}
                 className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
@@ -388,7 +407,12 @@ function NotesPageInner() {
                 <ChevronDown className="w-3.5 h-3.5" />
               </button>
               {showTemplateMenu && (
-                <div className="absolute right-0 top-full mt-1 w-44 rounded-lg border border-gray-200 bg-white shadow-lg z-30 overflow-hidden">
+                <div
+                  role="menu"
+                  aria-label="笔记模板"
+                  data-template-menu-root
+                  className="absolute right-0 top-full mt-1 w-44 rounded-lg border border-gray-200 bg-white shadow-lg z-30 overflow-hidden"
+                >
                   {NOTE_TEMPLATES.map((tpl) => (
                     <button
                       key={tpl.name}
