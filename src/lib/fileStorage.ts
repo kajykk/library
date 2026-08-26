@@ -61,17 +61,21 @@ export async function extractMetadataFromFile(file: File): Promise<{
     try {
       const { initMobiFile } = await import('@lingo-reader/mobi-parser');
       const mobi = await initMobiFile(file);
-      const metadata = mobi.getMetadata();
-      const coverImage = mobi.getCoverImage();
+      // destroy 必须放 finally：损坏文件解析中途抛错时也要释放底层资源
+      try {
+        const metadata = mobi.getMetadata();
+        const coverImage = mobi.getCoverImage();
 
-      defaultMeta.title = metadata.title || defaultMeta.title;
-      defaultMeta.author = metadata.author?.[0] || defaultMeta.author;
-      defaultMeta.publisher = metadata.publisher || '';
-      defaultMeta.description = metadata.description || '';
-      defaultMeta.language = metadata.language || 'zh';
-      defaultMeta.isbn = metadata.identifier || '';
-      defaultMeta.cover = coverImage || null;
-      mobi.destroy();
+        defaultMeta.title = metadata.title || defaultMeta.title;
+        defaultMeta.author = metadata.author?.[0] || defaultMeta.author;
+        defaultMeta.publisher = metadata.publisher || '';
+        defaultMeta.description = metadata.description || '';
+        defaultMeta.language = metadata.language || 'zh';
+        defaultMeta.isbn = metadata.identifier || '';
+        defaultMeta.cover = coverImage || null;
+      } finally {
+        mobi.destroy();
+      }
     } catch (error) {
       console.error('MOBI metadata extraction failed:', error);
     }
@@ -117,19 +121,30 @@ export async function extractMetadataFromFile(file: File): Promise<{
             
             const manifest = opfDoc.querySelector('manifest');
             if (manifest) {
-              const coverItem = manifest.querySelector('item[id="cover"]') || 
-                               manifest.querySelector('item[properties="cover-image"]') ||
-                               manifest.querySelector('item[id*="cover"]');
+              // 仅接受真正的图片资源：id*="cover" 启发式可能命中
+              // id="cover-page" 之类的 XHTML 项，把 HTML 错标成图片
+              const items = Array.from(manifest.querySelectorAll('item'));
+              const imageItems = items.filter((it) =>
+                (it.getAttribute('media-type') || '').startsWith('image/'),
+              );
+              const coverItem =
+                items.find((it) => it.getAttribute('properties') === 'cover-image') ||
+                imageItems.find((it) => it.getAttribute('id') === 'cover') ||
+                imageItems.find((it) => (it.getAttribute('id') || '').includes('cover')) ||
+                imageItems[0] ||
+                null;
               if (coverItem) {
                 const coverHref = coverItem.getAttribute('href');
                 if (coverHref) {
                   const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/') + 1);
                   const coverPath = opfDir + coverHref;
-                  const coverFile = zip.file(coverPath);
+                  const coverFile = zip.file(coverPath) ?? zip.file(decodeURIComponent(coverPath));
                   if (coverFile) {
                     const coverData = await coverFile.async('base64');
                     const ext = coverHref.split('.').pop()?.toLowerCase() || 'jpg';
-                    defaultMeta.cover = `data:image/${ext === 'png' ? 'png' : 'jpeg'};base64,${coverData}`;
+                    const mime =
+                      ext === 'png' ? 'png' : ext === 'gif' ? 'gif' : ext === 'svg' ? 'svg+xml' : ext === 'webp' ? 'webp' : 'jpeg';
+                    defaultMeta.cover = `data:image/${mime};base64,${coverData}`;
                   }
                 }
               }

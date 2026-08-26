@@ -45,6 +45,11 @@ export async function processEpubResources(
 ): Promise<string> {
   let processedContent = htmlContent;
 
+  // 统一使用函数式替换：字符串替换串中的 `$&`/`` $` ``/`$'` 会被特殊解释，
+  // CSS 内容（如 content:"$"、压缩产物）极易触发，导致内联结果被静默破坏
+  const replaceAll = (source: string, pattern: RegExp, to: string): string =>
+    source.replace(pattern, () => to);
+
   const imageRegex = /(src|href)=["']([^"']+\.(?:jpg|jpeg|png|gif|bmp|webp|svg))["']/gi;
   for (const match of [...processedContent.matchAll(imageRegex)]) {
     const attr = match[1];
@@ -54,9 +59,9 @@ export async function processEpubResources(
       continue;
     }
 
-    const resourcePath = originalPath.startsWith('/')
-      ? originalPath.substring(1)
-      : opfDir + originalPath;
+    const resourcePath = decodeURIComponent(
+      originalPath.startsWith('/') ? originalPath.substring(1) : opfDir + originalPath,
+    );
 
     const resourceFile = zip.file(resourcePath);
     if (resourceFile) {
@@ -67,13 +72,45 @@ export async function processEpubResources(
         const dataUrl = `data:${mimeType};base64,${base64Data}`;
         processedContent = processedContent.replace(
           new RegExp(`${attr}=["']${escapeRegExp(originalPath)}["']`, 'g'),
-          `${attr}="${dataUrl}"`
+          () => `${attr}="${dataUrl}"`
         );
       } catch (e) {
         console.warn(`Failed to inline resource: ${resourcePath}`, e);
       }
     }
   }
+
+  /** 内联 CSS 内部的 url(...) / 字体等引用（相对路径基于该 CSS 自身目录解析） */
+  const inlineCssUrls = async (cssContent: string, cssPath: string): Promise<string> => {
+    const cssDir = cssPath.substring(0, cssPath.lastIndexOf('/') + 1);
+    let result = cssContent;
+    const urlRegex = /url\(\s*(['"]?)([^'")]+?)\1\s*\)/gi;
+    for (const match of [...cssContent.matchAll(urlRegex)]) {
+      const target = match[2].trim();
+      if (
+        !target ||
+        target.startsWith('data:') ||
+        target.startsWith('http://') ||
+        target.startsWith('https://') ||
+        target.startsWith('#')
+      ) {
+        continue;
+      }
+      const resourcePath = decodeURIComponent(target.startsWith('/') ? target.substring(1) : cssDir + target);
+      const resourceFile = zip.file(resourcePath);
+      if (!resourceFile) continue;
+      try {
+        const ext = resourcePath.split('.').pop()?.toLowerCase() || '';
+        const fontMime: Record<string, string> = { ttf: 'font/ttf', otf: 'font/otf', woff: 'font/woff', woff2: 'font/woff2' };
+        const mimeType = fontMime[ext] ?? getImageMimeType(ext);
+        const base64Data = await resourceFile.async('base64');
+        result = replaceAll(result, new RegExp(escapeRegExp(match[0]), 'g'), `url("data:${mimeType};base64,${base64Data}")`);
+      } catch (e) {
+        console.warn(`Failed to inline css url(): ${resourcePath}`, e);
+      }
+    }
+    return result;
+  };
 
   const cssRegex = /<link[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi;
   for (const match of [...processedContent.matchAll(cssRegex)]) {
@@ -84,15 +121,16 @@ export async function processEpubResources(
       continue;
     }
 
-    const resourcePath = originalPath.startsWith('/')
-      ? originalPath.substring(1)
-      : opfDir + originalPath;
+    const resourcePath = decodeURIComponent(
+      originalPath.startsWith('/') ? originalPath.substring(1) : opfDir + originalPath,
+    );
 
     const resourceFile = zip.file(resourcePath);
     if (resourceFile) {
       try {
-        const cssContent = await resourceFile.async('text');
-        processedContent = processedContent.replace(fullMatch, `<style>${cssContent}</style>`);
+        const rawCss = await resourceFile.async('text');
+        const cssContent = await inlineCssUrls(rawCss, resourcePath);
+        processedContent = replaceAll(processedContent, new RegExp(escapeRegExp(fullMatch), 'g'), `<style>${cssContent}</style>`);
       } catch (e) {
         console.warn(`Failed to inline CSS: ${resourcePath}`, e);
       }

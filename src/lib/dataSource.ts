@@ -4,7 +4,6 @@
  * 否则回退本地 IndexedDB（原纯前端模式）。
  */
 
-import { v4 as uuidv4 } from 'uuid';
 import {
   Book,
   Category,
@@ -66,6 +65,19 @@ import {
 } from './db';
 
 export type DataSourceMode = 'api' | 'local';
+
+/** RFC4122 v4 id：浏览器/Node20 原生支持，替代 uuid 依赖 */
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // 极老环境兜底：手工拼接 v4 格式
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 let modeCache: DataSourceMode | null = null;
 
@@ -148,7 +160,7 @@ async function queueOfflineWrite(kind: PendingWrite['kind'], payload: PendingWri
   try {
     await initDB();
     await addPendingWrite({
-      id: uuidv4(),
+      id: generateId(),
       kind,
       payload,
       createdAt: Date.now(),
@@ -159,8 +171,20 @@ async function queueOfflineWrite(kind: PendingWrite['kind'], payload: PendingWri
   }
 }
 
-/** 将离线积压的进度/阅读记录重放到后端，成功后出队 */
-export async function flushPendingWrites(): Promise<number> {
+/** 将离线积压的进度/阅读记录重放到后端，成功后出队。
+ * 单飞锁：React Query refetch/多组件并发触发时只允许一个 flush 在跑，
+ * 否则两批会读到同一队列、重复上报阅读记录（record 重放非幂等）。 */
+let flushInFlight: Promise<number> | null = null;
+
+export function flushPendingWrites(): Promise<number> {
+  if (flushInFlight) return flushInFlight;
+  flushInFlight = doFlushPendingWrites().finally(() => {
+    flushInFlight = null;
+  });
+  return flushInFlight;
+}
+
+async function doFlushPendingWrites(): Promise<number> {
   await initDB();
   const pending = await getPendingWrites();
   let replayed = 0;
@@ -199,15 +223,38 @@ export async function countLocalBooks(): Promise<number> {
   }
 }
 
+/** collection 名称缓存：getBookById 高频调用（每次打开阅读器），
+ * 无需为映射一个分类名而反复全量拉取 collections。
+ * TTL 60s；写操作路径会调用 invalidateCollectionCache 保持新鲜。 */
+let collectionNameCache: Map<string, string> | null = null;
+let collectionNameCacheAt = 0;
+const COLLECTION_CACHE_TTL_MS = 60_000;
+
+async function getCollectionNames(): Promise<Map<string, string>> {
+  if (collectionNameCache && Date.now() - collectionNameCacheAt < COLLECTION_CACHE_TTL_MS) {
+    return collectionNameCache;
+  }
+  const collections = await listCollections();
+  collectionNameCache = new Map(collections.map((c) => [c.id, c.name]));
+  collectionNameCacheAt = Date.now();
+  return collectionNameCache;
+}
+
+function invalidateCollectionCache(): void {
+  collectionNameCache = null;
+  collectionNameCacheAt = 0;
+}
+
 /** 按 id 获取单本书（reader 路由用） */
 export async function getBookById(bookId: string): Promise<Book | null> {
   const mode = await resolveMode();
   if (mode === 'api') {
     try {
       const doc = await getDocument(bookId);
-      const collections = await listCollections();
-      return apiDocToBook(doc, new Map(collections.map((c) => [c.id, c.name])));
-    } catch {
+      const nameById = await getCollectionNames();
+      return apiDocToBook(doc, nameById);
+    } catch (err) {
+      console.warn('获取书籍详情失败:', err);
       return null;
     }
   }
@@ -222,13 +269,14 @@ async function ensureApiCollection(name: string): Promise<string> {
   const found = collections.find((c) => c.name === name);
   if (found) return found.id;
   const created = await createCollection(name, collections.length);
+  invalidateCollectionCache();
   return created.id;
 }
 
 async function addLocalCategoryIfNotExists(name: string): Promise<void> {
   const current = await getCategories();
   if (!current.some((c) => c.name === name)) {
-    await addCategory({ id: uuidv4(), name, parentId: null, sortOrder: current.length });
+    await addCategory({ id: generateId(), name, parentId: null, sortOrder: current.length });
   }
 }
 
@@ -245,7 +293,7 @@ export async function importBookFile(file: File, categoryName: string): Promise<
 
   await initDB();
   const format = file.name.split('.').pop()?.toLowerCase() || '';
-  const id = uuidv4();
+  const id = generateId();
   const metadata = await extractMetadataFromFile(file);
   await Promise.all([
     storeFile(id, file),
@@ -305,6 +353,7 @@ export async function saveBookEdit(book: Book): Promise<void> {
       collection_id: collectionId,
     });
     await setDocumentTags(book.id, book.tags);
+    invalidateCollectionCache();
     return;
   }
   await dbUpdateBook(book);
@@ -314,7 +363,9 @@ export async function addCategoryByName(name: string): Promise<Category> {
   const mode = await resolveMode();
   if (mode === 'api') {
     try {
-      return apiCollectionToCategory(await createCollection(name));
+      const created = await createCollection(name);
+      invalidateCollectionCache();
+      return apiCollectionToCategory(created);
     } catch (err) {
       throw new Error((err as Error).message.includes('409') ? `分类"${name}"已存在` : (err as Error).message);
     }
@@ -324,7 +375,7 @@ export async function addCategoryByName(name: string): Promise<Category> {
   if (current.some((c) => c.name === name)) {
     throw new Error(`分类"${name}"已存在`);
   }
-  const category: Category = { id: uuidv4(), name, parentId: null, sortOrder: current.length };
+  const category: Category = { id: generateId(), name, parentId: null, sortOrder: current.length };
   await addCategory(category);
   return category;
 }
@@ -334,6 +385,7 @@ export async function deleteCategoryAndReset(category: Category): Promise<void> 
   const mode = await resolveMode();
   if (mode === 'api') {
     await deleteCollection(category.id);
+    invalidateCollectionCache();
     return;
   }
   await initDB();
@@ -422,7 +474,7 @@ export async function saveReadingSession(
   }
   await initDB();
   await addReadingRecord({
-    id: uuidv4(),
+    id: generateId(),
     bookId,
     startTime: startTimeMs,
     endTime: endTimeMs,
@@ -506,7 +558,7 @@ export async function addBookmarkAnnotation(
   }
   await initDB();
   const bookmark: Bookmark = {
-    id: uuidv4(),
+    id: generateId(),
     bookId,
     page,
     note,
@@ -532,7 +584,7 @@ export async function addNoteAnnotation(
   }
   await initDB();
   const note: DbNote = {
-    id: uuidv4(),
+    id: generateId(),
     bookId,
     page,
     content,

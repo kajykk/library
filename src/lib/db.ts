@@ -56,17 +56,32 @@ const DB_NAME = 'ebook_manager_db';
 const DB_VERSION = 3;
 
 let db: IDBDatabase | null = null;
+let dbPromise: Promise<IDBDatabase> | null = null;
 
-export async function initDB(): Promise<IDBDatabase> {
-  if (db) return db;
-
+function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
-      db = request.result;
-      resolve(db);
+      const database = request.result;
+      // 自愈：另一标签页触发版本升级/删除数据库时，旧连接会卡住升级且后续
+      // 操作全部抛 InvalidStateError。这里主动让出并失效缓存，下次调用重开。
+      database.onversionchange = () => {
+        database.close();
+        if (db === database) {
+          db = null;
+          dbPromise = null;
+        }
+      };
+      database.onclose = () => {
+        if (db === database) {
+          db = null;
+          dbPromise = null;
+        }
+      };
+      db = database;
+      resolve(database);
     };
 
     request.onupgradeneeded = (event) => {
@@ -117,6 +132,18 @@ export async function initDB(): Promise<IDBDatabase> {
       }
     };
   });
+}
+
+export function initDB(): Promise<IDBDatabase> {
+  // 记忆化：并发调用（如 exportData 的 Promise.all）复用同一打开中的连接，
+  // 避免多次 indexedDB.open 泄漏多余连接、阻塞后续版本升级。
+  if (!dbPromise) {
+    dbPromise = openDatabase().catch((err) => {
+      dbPromise = null;
+      throw err;
+    });
+  }
+  return dbPromise;
 }
 
 export async function addBook(book: Book): Promise<void> {
@@ -366,9 +393,11 @@ export interface PendingWrite {
   createdAt: number;
 }
 
-export function addPendingWrite(item: PendingWrite): Promise<void> {
-  return new Promise(async (resolve, reject) => {
-    const database = await initDB();
+export async function addPendingWrite(item: PendingWrite): Promise<void> {
+  // 注意：不能用 new Promise(async ...) 包裹 await initDB()——若 initDB 拒绝，
+  // 异常只会落在 executor 内部，外层 promise 永不 settle（上游永久挂起）。
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
     const transaction = database.transaction(['pendingWrites'], 'readwrite');
     const request = transaction.objectStore('pendingWrites').put(item);
     request.onsuccess = () => resolve();
@@ -380,9 +409,9 @@ export function getPendingWrites(): Promise<PendingWrite[]> {
   return getAllFromStore<PendingWrite>('pendingWrites');
 }
 
-export function deletePendingWrite(id: string): Promise<void> {
-  return new Promise(async (resolve, reject) => {
-    const database = await initDB();
+export async function deletePendingWrite(id: string): Promise<void> {
+  const database = await initDB();
+  return new Promise((resolve, reject) => {
     const transaction = database.transaction(['pendingWrites'], 'readwrite');
     const request = transaction.objectStore('pendingWrites').delete(id);
     request.onsuccess = () => resolve();
@@ -404,27 +433,42 @@ export async function exportData(): Promise<string> {
   return JSON.stringify(data, null, 2);
 }
 
+const IMPORT_STORES = ['books', 'categories', 'bookmarks', 'readingRecords', 'notes', 'covers'] as const;
+
 export async function importData(jsonString: string): Promise<void> {
-  const data = JSON.parse(jsonString);
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(jsonString) as Record<string, unknown>;
+  } catch {
+    throw new Error('备份文件不是合法 JSON');
+  }
+  if (typeof data !== 'object' || data === null) {
+    throw new Error('备份文件格式不正确');
+  }
   const database = await initDB();
 
   // 注意：采用 upsert 合并语义，不先清空现有数据（书籍文件存于 files store，
   // 备份不含文件，清空元数据会导致文件失联且不可逆）
-  const stores = ['books', 'categories', 'bookmarks', 'readingRecords', 'notes', 'covers'];
-  const transaction = database.transaction(stores, 'readwrite');
+  const stores = IMPORT_STORES.filter((s) => Array.isArray(data[s]));
+  if (stores.length === 0) return;
+  const transaction = database.transaction([...stores], 'readwrite');
 
-  for (const storeName of stores) {
-    if (!data[storeName] || !Array.isArray(data[storeName])) continue;
-
-    const store = transaction.objectStore(storeName);
-    for (const item of data[storeName]) {
-      await new Promise<void>((resolve, reject) => {
-        const putRequest = store.put(item);
-        putRequest.onsuccess = () => resolve();
-        putRequest.onerror = () => reject(putRequest.error);
-      });
+  // 全部 put 在同一同步任务内发出，事务存活到 oncomplete；
+  // 不在事务内 await（部分实现会因微任务间隙提前 commit 而报错）
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error('导入事务中止'));
+    for (const storeName of stores) {
+      const store = transaction.objectStore(storeName);
+      for (const item of data[storeName] as unknown[]) {
+        // 形状校验：必须有 id 主键，防止畸形备份污染持久数据
+        if (item && typeof item === 'object' && 'id' in item) {
+          store.put(item);
+        }
+      }
     }
-  }
+  });
 }
 
 export async function storeFileInDB(id: string, arrayBuffer: ArrayBuffer): Promise<void> {
