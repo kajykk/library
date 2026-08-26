@@ -7,7 +7,22 @@ server/__pycache__
 server/.pytest_cache
 server/data
 server/*.db
-server/.env
+# 密钥文件一律不得进入构建上下文（此前仅排除 server/.env，根目录 .env 会随 COPY . . 进镜像层）
+.env
+**/.env
 server/tests/__pycache__
 *.log
 backups
+
+# 本地工具与产物：与运行时无关，缩小上下文、避免缓存污染
+.hypothesis
+.pytest_cache
+.npm-cache
+.pip-cache
+tsconfig.tsbuildinfo
+test-results
+playwright-report
+e2e
+docs
+console
+scripts

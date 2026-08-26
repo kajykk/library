@@ -23,6 +23,7 @@ next-env.d.ts
 .DS_Store
 *.pem
 npm-debug.log*
+*.log
 
 # python / server 运行时产物
 __pycache__/

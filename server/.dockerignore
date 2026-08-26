@@ -1,6 +1,14 @@
 __pycache__
 .pytest_cache
 .env
+.hypothesis
 *.db
 data
+probe-data
+e2e-data-*
 *.log
+
+# 测试与一次性运维脚本不进生产镜像（运行时只需 app/、alembic/、requirements）
+tests
+scripts
+/*.py

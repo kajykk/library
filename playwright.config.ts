@@ -11,7 +11,7 @@ export default defineConfig({
   retries: 1,
   workers: 1,
   globalSetup: './e2e/global-setup.ts',
-  reporter: [['list']],
+  reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: `http://localhost:${FRONTEND_PORT}`,
     // 本机 win 用已安装的 Edge；CI(linux) 用 Playwright 自带 chromium

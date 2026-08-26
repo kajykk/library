@@ -71,8 +71,8 @@ test.describe('功能扩展冒烟', () => {
     // 诊断增强：记录轮询期间服务端与页面两侧的进度值
     const diag: string[] = [];
     await expect.poll(async () => {
-      const resp = await request.get('http://localhost:8111/api/documents', {
-        headers: { 'X-API-Token': 'e2e-token' },
+      const resp = await request.get(`${API_BASE}/api/documents`, {
+        headers: { 'X-API-Token': TOKEN },
       });
       const docs = (await resp.json()) as Array<{ id: string; title: string; read_progress?: number }>;
       const doc = docs.find((d) => d.title === 'E2E 测试书');
@@ -93,7 +93,7 @@ test.describe('功能扩展冒烟', () => {
 
     // Ctrl+K 打开命令面板，输入 "剪藏 <URL>" 触发剪藏动作项
     await page.keyboard.press('Control+k');
-    await page.getByPlaceholder(/搜索文档/).fill('剪藏 http://localhost:8111/api/health');
+    await page.getByPlaceholder(/搜索文档/).fill(`剪藏 ${API_BASE}/api/health`);
     await expect(page.getByText(/剪藏网页：http/)).toBeVisible();
     await page.keyboard.press('Enter');
 
@@ -104,13 +104,13 @@ test.describe('功能扩展冒烟', () => {
 
     // 剪藏文档已入库（webclip 类型）
     const docs = await (
-      await request.get(`http://localhost:8111/api/documents`, {
-        headers: { 'X-API-Token': 'e2e-token' },
+      await request.get(`${API_BASE}/api/documents`, {
+        headers: { 'X-API-Token': TOKEN },
       })
     ).json();
     const clip = docs.find((d: { type: string }) => d.type === 'webclip');
     expect(clip).toBeTruthy();
-    expect(clip.source_url).toBe('http://localhost:8111/api/health');
+    expect(clip.source_url).toBe(`${API_BASE}/api/health`);
   });
 
   test('命令面板跳转笔记', async ({ page, request }) => {
