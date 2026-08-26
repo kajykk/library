@@ -42,7 +42,7 @@ _TRIGGER_STATEMENTS = [
     END;
     """,
     f"""
-    CREATE TRIGGER IF NOT EXISTS documents_fts_au AFTER UPDATE ON documents BEGIN
+    CREATE TRIGGER IF NOT EXISTS documents_fts_au AFTER UPDATE OF title, author, description, content ON documents BEGIN
         DELETE FROM {FTS_TABLE} WHERE doc_id = old.id;
         INSERT INTO {FTS_TABLE}(doc_id, title, author, description, content)
         VALUES (new.id, coalesce(new.title, ''), coalesce(new.author, ''),
@@ -50,6 +50,9 @@ _TRIGGER_STATEMENTS = [
     END;
     """,
 ]
+# 旧版本部署的 documents_fts_au 是"任意列 UPDATE 全量重建"，阅读进度心跳会
+# 触发写放大；此处先删旧触发器再按新定义重建（幂等）。
+_TRIGGER_DROP_STATEMENTS = ["DROP TRIGGER IF EXISTS documents_fts_au;"]
 
 _REINDEX_STATEMENTS = [
     f"DELETE FROM {FTS_TABLE};",
@@ -78,6 +81,8 @@ def ensure_fts_index(engine: Engine) -> bool:
         with engine.begin() as conn:
             conn.exec_driver_sql("SELECT fts5(?)", ("initialize",))
             conn.exec_driver_sql(_CREATE_SQL)
+            for drop_sql in _TRIGGER_DROP_STATEMENTS:
+                conn.exec_driver_sql(drop_sql)
             for trigger_sql in _TRIGGER_STATEMENTS:
                 conn.exec_driver_sql(trigger_sql)
             stale = conn.exec_driver_sql(

@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..database import SessionLocal, get_db
@@ -92,19 +93,22 @@ def sync_mention_links(db: Session, doc: Document) -> int:
     if not doc.content:
         return 0
 
-    created = 0
-    for title in set(MENTION_PATTERN.findall(doc.content)):
-        target = db.scalar(
-            select(Document).where(
-                Document.title == title.strip(),
-                Document.id != doc.id,
-                Document.deleted_at.is_(None),
-            )
+    titles = {t.strip() for t in MENTION_PATTERN.findall(doc.content)}
+    titles.discard("")
+    if not titles:
+        return 0
+
+    # 一次 IN 批量查询替代逐标题 SELECT（此前为 N+1，长文多链接时是查询风暴）
+    targets = db.scalars(
+        select(Document).where(
+            Document.title.in_(titles),
+            Document.id != doc.id,
+            Document.deleted_at.is_(None),
         )
-        if target is not None:
-            db.add(Link(source_id=doc.id, target_id=target.id, type="mention"))
-            created += 1
-    return created
+    ).all()
+    for target in targets:
+        db.add(Link(source_id=doc.id, target_id=target.id, type="mention"))
+    return len(targets)
 
 
 class Backlink(BaseModel):
@@ -321,7 +325,14 @@ def update_document(doc_id: uuid.UUID, payload: DocumentUpdate, db: Session = De
             )
         ).all()
         for ref in refs:
-            ref.content = (ref.content or "").replace(old_ref, new_ref)
+            # ilike 命中不区分大小写，替换也必须忽略大小写（仅改标题大小写的场景此前会漏更新）；
+            # 用函数替换器避免标题中的 \ 序列被解释为反向引用
+            ref.content = re.sub(
+                re.escape(old_ref),
+                lambda _m: new_ref,
+                ref.content or "",
+                flags=re.IGNORECASE,
+            )
             sync_mention_links(db, ref)
     db.commit()
     return doc
@@ -395,23 +406,32 @@ def get_document_insight(doc_id: uuid.UUID, db: Session = Depends(get_db)):
 def delete_document(doc_id: uuid.UUID, hard: bool = False, db: Session = Depends(get_db)):
     # 硬删除允许作用于已软删除的文档（彻底清理）
     doc = get_doc_or_404(db, doc_id, include_deleted=hard)
+    file_path, cover_path = doc.file_path, doc.cover_path
     if hard:
-        file_storage.delete(doc.file_path)
-        file_storage.delete(doc.cover_path)
         db.delete(doc)
+        db.commit()
+        # 先落库再删文件：commit 失败时记录仍在、可重试；文件删除失败仅留孤儿磁盘文件
+        for p in (file_path, cover_path):
+            if p:
+                file_storage.delete(p)
     else:
         doc.deleted_at = utcnow()
-    db.commit()
+        db.commit()
 
 
 @router.post("/upload", response_model=DocumentOut, status_code=201)
-async def upload_document(    request: Request,
+async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     collection_id: uuid.UUID | None = Form(default=None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
 ):
-    """上传书籍/PDF：流式写入磁盘 + 后端提取元数据与封面"""
+    """上传书籍/PDF：流式写入磁盘 + 后端提取元数据与封面
+
+    SHA-256 / 元数据解析 / 正文提取均为秒级同步重活，必须经
+    run_in_threadpool 下放线程池，否则会阻塞事件循环、冻结全站请求。
+    """
     enforce_rate_limit(request, max_requests=50, window_seconds=60)
 
     max_bytes = settings.upload_max_size_mb * 1024 * 1024
@@ -438,7 +458,7 @@ async def upload_document(    request: Request,
     abs_file = file_storage.abs_path(rel_path)
 
     # SHA-256 去重：同内容文件已在库（含回收站外）则拒绝并提示已有条目
-    sha256 = file_storage.sha256_of(rel_path)
+    sha256 = await run_in_threadpool(file_storage.sha256_of, rel_path)
     existing = db.scalar(
         select(Document).where(
             Document.sha256 == sha256,
@@ -457,18 +477,23 @@ async def upload_document(    request: Request,
             },
         )
 
-    meta = metadata_extract.extract_metadata_from_file(filename, fmt, abs_file)
+    meta = await run_in_threadpool(
+        metadata_extract.extract_metadata_from_file, filename, fmt, abs_file
+    )
 
     text_content = (
-        content_extract.extract_text_from_file(fmt, abs_file)
+        await run_in_threadpool(content_extract.extract_text_from_file, fmt, abs_file)
         if fmt in content_extract.TEXT_FORMATS
         else ""
     )
 
     if collection_id is None:
         # 三级自动分类：标题/作者关键词 → 已提取正文词频 → （后台）OCR 扫描件
-        target = auto_classify.classify_document(
-            meta["title"] or filename, meta["author"] or "", text_content
+        target = await run_in_threadpool(
+            auto_classify.classify_document,
+            meta["title"] or filename,
+            meta["author"] or "",
+            text_content,
         )
         if target:
             col = db.scalar(select(Collection).where(Collection.name == target))
@@ -553,9 +578,21 @@ def get_document_file(doc_id: uuid.UUID, request: Request, db: Session = Depends
         match = RANGE_PATTERN.match(range_header.strip())
         if match:
             start_s, end_s = match.groups()
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else size - 1
-            end = min(end, size - 1)
+            # suffix-range：bytes=-N 语义为"最后 N 字节"（此前被误解析为 0..N-1，
+            # 个别下载工具会拿到损坏数据段）
+            if not start_s and end_s:
+                suffix = int(end_s)
+                if suffix <= 0:
+                    return Response(
+                        status_code=416,
+                        headers={"Content-Range": f"bytes */{size}"},
+                    )
+                start = max(0, size - suffix)
+                end = size - 1
+            else:
+                start = int(start_s) if start_s else 0
+                end = int(end_s) if end_s else size - 1
+                end = min(end, size - 1)
             if start > end or start >= size:
                 return Response(
                     status_code=416,
@@ -632,8 +669,12 @@ VERSION_MIN_INTERVAL_SECONDS = 30
 VERSION_MAX_PER_DOC = 100
 
 
-def _snapshot_version(db: Session, doc: Document, title: str, content: str) -> None:
-    """保存前快照上一状态：与最新版本内容相同或间隔不足 30 秒则跳过，每文档最多保留 100 版"""
+def _snapshot_version(db: Session, doc: Document, title: str, content: str, *, force: bool = False) -> None:
+    """保存前快照上一状态：与最新版本内容相同或间隔不足 30 秒则跳过，每文档最多保留 100 版。
+
+    force=True（版本恢复等需要完整撤销链的场景）跳过间隔限制，但仍保留
+    内容去重与数量裁剪。
+    """
     latest = db.scalar(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == doc.id)
@@ -643,11 +684,12 @@ def _snapshot_version(db: Session, doc: Document, title: str, content: str) -> N
     if latest is not None:
         if latest.title == title and latest.content == content:
             return
-        created = latest.created_at
-        if created.tzinfo is not None:
-            created = created.astimezone(timezone.utc).replace(tzinfo=None)
-        if (utcnow().replace(tzinfo=None) - created).total_seconds() < VERSION_MIN_INTERVAL_SECONDS:
-            return
+        if not force:
+            created = latest.created_at
+            if created.tzinfo is not None:
+                created = created.astimezone(timezone.utc).replace(tzinfo=None)
+            if (utcnow().replace(tzinfo=None) - created).total_seconds() < VERSION_MIN_INTERVAL_SECONDS:
+                return
     db.add(DocumentVersion(document_id=doc.id, title=title, content=content or ""))
     db.flush()
     stale_ids = db.scalars(
@@ -694,8 +736,9 @@ def restore_document_version(doc_id: uuid.UUID, version_id: uuid.UUID, db: Sessi
     version = db.get(DocumentVersion, version_id)
     if version is None or version.document_id != doc_id:
         raise HTTPException(status_code=404, detail="Version not found")
-    # 先快照当前内容，恢复操作可撤销
-    db.add(DocumentVersion(document_id=doc.id, title=doc.title, content=doc.content or ""))
+    # 先快照当前内容（复用统一快照逻辑：内容去重 + 100 版裁剪；force 跳过 30s
+    # 间隔以保留完整撤销链）。此前裸 db.add 绕过该逻辑，反复恢复会无限堆积版本。
+    _snapshot_version(db, doc, doc.title, doc.content or "", force=True)
     doc.title = version.title
     doc.content = version.content
     sync_mention_links(db, doc)

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import re
 import sqlite3
@@ -109,7 +110,8 @@ def _reject_unauthorized(message: dict, scope: dict) -> bool:
                 token = value.decode("latin-1")
                 break
     path = scope.get("path", "")
-    if token != settings.api_token:
+    # 与 REST 端 auth.py 一致：常时比较，避免计时侧信道
+    if not hmac.compare_digest(token or "", settings.api_token):
         logger.warning("协作连接被拒绝（Token 无效）: %s", path)
         return True
     if not ROOM_PATTERN.match(path):

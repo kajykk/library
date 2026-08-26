@@ -1,5 +1,6 @@
 """全文检索：SQLite FTS5 trigram（中文子串）+ ILIKE 兜底；PostgreSQL 用 zhparser 中文分词"""
 
+import logging
 import re
 import uuid
 
@@ -195,9 +196,11 @@ def search(
         if not short_term and len(q) >= 3:
             try:
                 return _search_fts(db, q, type, limit)
-            except Exception:
-                # 触发器同步异常时兜底 ILIKE
-                pass
+            except Exception as exc:
+                # 触发器同步异常时兜底 ILIKE——但必须留痕，否则 FTS 损坏无人知晓
+                logging.getLogger("kb.search").warning(
+                    "FTS 查询失败，回退 ILIKE: %s", exc, exc_info=True
+                )
     return _search_ilike(db, q, type, limit)
 
 

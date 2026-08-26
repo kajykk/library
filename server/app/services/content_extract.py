@@ -23,11 +23,16 @@ OCR_MAX_PAGES = 20
 
 TEXT_FORMATS = {"epub", "pdf", "txt", "md", "html", "mobi", "azw", "azw3"}
 
+# 共享有界线程池：此前每次 _bounded 新建单线程 executor，超时被遗弃的任务
+# （如 90s OCR）会随调用次数累积出大量游离线程。共享池复用线程并限制并发。
+_EXTRACT_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="kb-extract"
+)
+
 
 def _bounded(fn, timeout: float = EXTRACT_TIMEOUT) -> str:
-    """独立线程 + 时间预算执行提取；超时放弃线程（wait=False），不阻塞后续文件。"""
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(fn)
+    """共享线程池 + 时间预算执行提取；超时放弃该 future（任务线程自然结束），不阻塞后续文件。"""
+    future = _EXTRACT_POOL.submit(fn)
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
@@ -36,8 +41,6 @@ def _bounded(fn, timeout: float = EXTRACT_TIMEOUT) -> str:
     except Exception as exc:
         logger.warning("正文提取失败: %s", exc, exc_info=True)
         return ""
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _head(path: Path, n: int) -> bytes:

@@ -45,9 +45,10 @@ def upgrade() -> None:
         END;
         """
     )
+    op.execute("DROP TRIGGER IF EXISTS documents_fts_au")
     op.execute(
         """
-        CREATE TRIGGER IF NOT EXISTS documents_fts_au AFTER UPDATE ON documents BEGIN
+        CREATE TRIGGER documents_fts_au AFTER UPDATE OF title, author, description, content ON documents BEGIN
             DELETE FROM documents_fts WHERE doc_id = old.id;
             INSERT INTO documents_fts(doc_id, title, author, description, content)
             VALUES (new.id, coalesce(new.title, ''), coalesce(new.author, ''),

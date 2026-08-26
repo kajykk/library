@@ -16,6 +16,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # 0001 用当前 metadata 建表时可能已带本表（checkfirst 路径），必须幂等
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("document_versions"):
+        return
     op.create_table(
         "document_versions",
         sa.Column("id", sa.Uuid(), nullable=False),

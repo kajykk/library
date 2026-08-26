@@ -15,6 +15,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # tsvector 生成列 + zhparser 为 PostgreSQL 专属；SQLite 直接跳过
+    if op.get_bind().dialect.name != "postgresql":
+        return
     op.execute(
         """
         ALTER TABLE documents

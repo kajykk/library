@@ -9,10 +9,11 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..database import get_db
 from ..models import Annotation, Collection, Document, ReadingRecord
 from ..schemas import MigrateMetaPayload, MigrateMetaResult
@@ -20,6 +21,24 @@ from ..services import file_storage
 from .documents import _get_or_create_tag, get_doc_or_404
 
 router = APIRouter(prefix="/migrate", tags=["migrate"])
+
+_COVER_MAX_BYTES = 20 * 1024 * 1024
+
+
+async def _read_bounded(file: UploadFile, max_bytes: int) -> bytes:
+    """分块读取上传内容并强制大小上限（与 /documents/upload 一致），防止 OOM。"""
+    buf = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds {max_bytes // (1024 * 1024)} MB limit",
+            )
+    return bytes(buf)
 
 
 def _ms_to_dt(ms: int | None) -> datetime | None:
@@ -137,7 +156,8 @@ async def migrate_file(
     db: Session = Depends(get_db),
 ):
     doc = get_doc_or_404(db, doc_id)
-    data = await file.read()
+    max_bytes = get_settings().upload_max_size_mb * 1024 * 1024
+    data = await _read_bounded(file, max_bytes)
     fmt = doc.format or "bin"
     file_storage.delete(doc.file_path)  # 幂等：覆盖旧文件
     doc.file_path = file_storage.save_file(doc.id, fmt, data)
@@ -152,7 +172,7 @@ async def migrate_cover(
     db: Session = Depends(get_db),
 ):
     doc = get_doc_or_404(db, doc_id)
-    data = await file.read()
+    data = await _read_bounded(file, _COVER_MAX_BYTES)
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
     file_storage.delete(doc.cover_path)

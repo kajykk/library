@@ -62,8 +62,14 @@ def delete_link(source_id: UUID, target_id: UUID, type: str, db: Session = Depen
 
 @router.get("/graph", response_model=GraphOut)
 def get_graph(db: Session = Depends(get_db)):
-    """图谱数据：全部未删除文档为节点，links 为边"""
-    docs = list(db.scalars(select(Document).where(Document.deleted_at.is_(None))))
+    """图谱数据：全部未删除文档为节点，links 为边。
+
+    只取 id/title/type 三列：Document.tags 配置了全局 selectin 加载，
+    走完整实体会把所有标签联查一遍，图谱场景纯属浪费。
+    """
+    docs = db.execute(
+        select(Document.id, Document.title, Document.type).where(Document.deleted_at.is_(None))
+    ).all()
     links = list(db.scalars(select(Link)))
     return GraphOut(
         nodes=[GraphNode(id=d.id, title=d.title, type=d.type) for d in docs],

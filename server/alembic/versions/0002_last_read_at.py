@@ -16,7 +16,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMP WITH TIME ZONE")
+    # SQLite 不支持 ADD COLUMN IF NOT EXISTS；用 inspector 检查后执行，双方言通用。
+    # 0001 采用当前 metadata 建表（checkfirst），全新库可能已带该列，必须幂等。
+    bind = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(bind).get_columns("documents")}
+    if "last_read_at" in cols:
+        return
+    op.add_column(
+        "documents",
+        sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=True),
+    )
 
 
 def downgrade() -> None:

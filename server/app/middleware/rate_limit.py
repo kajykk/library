@@ -14,6 +14,9 @@ class _Bucket:
 
 _BUCKETS: dict[str, _Bucket] = defaultdict(lambda: _Bucket(deque()))
 
+# 桶总数上限：key 含 path，被扫描时可产生大量桶；超限后清理空桶防泄漏
+_MAX_BUCKETS = 10_000
+
 
 def _client_key(request: Request) -> str:
     client = request.client.host if request.client else "unknown"
@@ -29,6 +32,9 @@ def enforce_rate_limit(request: Request, max_requests: int, window_seconds: int)
     bucket = _BUCKETS[key]
     while bucket.timestamps and now - bucket.timestamps[0] > window_seconds:
         bucket.timestamps.popleft()
+    if len(_BUCKETS) > _MAX_BUCKETS:
+        for stale_key in [k for k, b in _BUCKETS.items() if not b.timestamps]:
+            del _BUCKETS[stale_key]
     if len(bucket.timestamps) >= max_requests:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

@@ -79,13 +79,20 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["system"])
     def health():
-        """系统自检：数据库、FTS 索引、数据目录、协作库可写性（供启动探活与设置页状态卡）"""
+        """系统自检：数据库、FTS 索引、数据目录、协作库可写性（供启动探活与设置页状态卡）
+
+        该端点保持无鉴权（容器 healthcheck / 探活需要），因此响应中不得
+        携带原始异常文本或服务器路径等内部细节——细节仅写日志。
+        """
+        import logging
+
         from sqlalchemy import text
 
         from .database import SessionLocal
         from .services.search_index import FTS_TABLE
 
         settings = get_settings()
+        logger = logging.getLogger("kb.health")
 
         result: dict[str, object] = {"status": "ok", "checks": {}}
 
@@ -98,13 +105,15 @@ def create_app() -> FastAPI:
                 try:
                     db.execute(text(f"SELECT rowid FROM {FTS_TABLE} LIMIT 1"))
                     result["checks"]["fulltext_index"] = "ok"
-                except Exception:
+                except Exception as exc:
+                    logger.warning("健康检查 FTS 探测失败: %s", exc)
                     result["checks"]["fulltext_index"] = "missing"
                     result["status"] = "degraded"
             finally:
                 db.close()
         except Exception as exc:
-            result["checks"]["database"] = f"error: {exc}"
+            logger.warning("健康检查数据库失败: %s", exc)
+            result["checks"]["database"] = "error"
             result["status"] = "error"
 
         # 数据目录可写
@@ -116,18 +125,26 @@ def create_app() -> FastAPI:
             probe.unlink(missing_ok=True)
             result["checks"]["data_dir"] = "ok"
         except Exception as exc:
-            result["checks"]["data_dir"] = f"error: {exc}"
+            logger.warning("健康检查数据目录失败: %s", exc)
+            result["checks"]["data_dir"] = "error"
             result["status"] = "error"
 
-        # 协作库可写（与主库同目录，y-websocket 使用）
+        # 协作库可写（SQLite 部署与主库同目录；非 SQLite 时退化为数据目录探测）
         try:
-            db_path = Path(settings.database_url.replace("sqlite:///", ""))
-            collab_probe = db_path.parent / f"{db_path.stem}.collab-probe"
+            if settings.database_url.startswith("sqlite:///"):
+                db_path = Path(settings.database_url.replace("sqlite:///", ""))
+                collab_probe_dir = db_path.parent
+                probe_name = f"{db_path.stem}.collab-probe"
+            else:
+                collab_probe_dir = Path(settings.data_dir)
+                probe_name = "collab-probe"
+            collab_probe = collab_probe_dir / probe_name
             collab_probe.write_text("ok", encoding="utf-8")
             collab_probe.unlink(missing_ok=True)
             result["checks"]["collab_dir"] = "ok"
         except Exception as exc:
-            result["checks"]["collab_dir"] = f"error: {exc}"
+            logger.warning("健康检查协作目录失败: %s", exc)
+            result["checks"]["collab_dir"] = "error"
             result["status"] = "error"
 
         return result
