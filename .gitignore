@@ -31,6 +31,8 @@ __pycache__/
 .pytest_cache/
 server/.env
 server/*.db
+server/*.db-shm
+server/*.db-wal
 server/data/
 server/e2e-*/
 .venv/
