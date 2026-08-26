@@ -1,12 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor, EditorContent, Extension, type Editor } from '@tiptap/react';
+import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from 'tiptap-markdown';
 import Collaboration from '@tiptap/extension-collaboration';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
-import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { WebsocketProvider } from 'y-websocket';
 import {
   ArrowLeft,
@@ -17,16 +15,13 @@ import {
   ListOrdered,
   Code,
   Quote,
-  Link2,
   History,
   BookMarked,
   Trash2,
   Wifi,
   WifiOff,
   Users,
-  Minus,
-  Heading1,
-  Heading3,
+  Link2,
   Sparkles,
 } from 'lucide-react';
 import * as Y from 'yjs';
@@ -44,6 +39,10 @@ import { useDebouncedSave } from './useDebouncedSave';
 import { useNoteRelations } from './useNoteRelations';
 import CitationDialog from './CitationDialog';
 import HistoryDrawer from './HistoryDrawer';
+import { useToast } from '@/components/ui';
+import { WikiLinkExtension } from './editor/wikiLink';
+import SlashMenu, { SLASH_ITEMS } from './editor/menus/SlashMenu';
+import MentionMenu from './editor/menus/MentionMenu';
 
 function highlightSnippet(snippet: string) {
   const parts = snippet.split(/<\/?mark>/);
@@ -55,69 +54,6 @@ function highlightSnippet(snippet: string) {
     ),
   );
 }
-
-// ---------- 斜杠命令菜单 ----------
-
-const SLASH_ITEMS: Array<{
-  id: string;
-  label: string;
-  hint: string;
-  icon: React.ReactNode;
-  apply: (editor: Editor) => void;
-}> = [
-  { id: 'h1', label: '一级标题', hint: 'H1', icon: <Heading1 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 1 }).run() },
-  { id: 'h2', label: '二级标题', hint: 'H2', icon: <Heading2 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 2 }).run() },
-  { id: 'h3', label: '三级标题', hint: 'H3', icon: <Heading3 className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleHeading({ level: 3 }).run() },
-  { id: 'bullet', label: '无序列表', hint: '•', icon: <List className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBulletList().run() },
-  { id: 'ordered', label: '有序列表', hint: '1.', icon: <ListOrdered className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleOrderedList().run() },
-  { id: 'quote', label: '引用', hint: '❝', icon: <Quote className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleBlockquote().run() },
-  { id: 'code', label: '代码块', hint: '</>', icon: <Code className="w-4 h-4" />, apply: (e) => e.chain().focus().toggleCodeBlock().run() },
-  { id: 'rule', label: '分隔线', hint: '——', icon: <Minus className="w-4 h-4" />, apply: (e) => e.chain().focus().setHorizontalRule().run() },
-  { id: 'wikilink', label: '双链链接', hint: '[[', icon: <Link2 className="w-4 h-4" />, apply: (e) => e.chain().focus().insertContent('[[').run() },
-];
-
-// ---------- [[双链]] 装饰 + 悬浮预览 ----------
-
-const wikilinkKey = new PluginKey('kb-wikilink');
-
-function wikilinkDecorations(doc: any): DecorationSet {
-  const decorations: Decoration[] = [];
-  doc.descendants((node: { isText: boolean; text?: string }, pos: number) => {
-    if (!node.isText || !node.text) return;
-    const regex = /\[\[([^\[\]\n]+)\]\]/g;
-    let m: RegExpExecArray | null;
-    while ((m = regex.exec(node.text)) !== null) {
-      decorations.push(
-        Decoration.inline(pos + m.index, pos + m.index + m[0].length, {
-          nodeName: 'span',
-          class: 'kb-wikilink',
-          'data-title': m[1],
-        }),
-      );
-    }
-  });
-  return DecorationSet.create(doc, decorations);
-}
-
-const WikiLinkExtension = Extension.create({
-  name: 'wikilink',
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: wikilinkKey,
-        state: {
-          init: (_, state) => wikilinkDecorations(state.doc),
-          apply: (tr, old) => (tr.docChanged ? wikilinkDecorations(tr.doc) : old),
-        },
-        props: {
-          decorations(state) {
-            return this.getState(state);
-          },
-        },
-      }),
-    ];
-  },
-});
 
 export interface NoteEditorProps {
   note: ApiDocument;
@@ -167,6 +103,7 @@ function NoteEditorView({
 }) {
   const [title, setTitle] = useState(note.title);
   const [tags, setTags] = useState(note.tags.map((t) => t.name));
+  const toast = useToast();
   const [newTag, setNewTag] = useState('');
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'dirty'>('saved');
   const [mention, setMention] = useState<{ query: string; top: number; left: number } | null>(null);
@@ -184,6 +121,8 @@ function NoteEditorView({
   const editorContainerRef = useRef<HTMLDivElement>(null);
   // 协作 sync 后只播种一次编辑器内容
   const seededRef = useRef(false);
+  // 惰性序列化：保存时刻才从 TipTap 取 Markdown（返回 null 表示编辑器不可用，回退 contentRef）
+  const getMarkdownRef = useRef<() => string | null>(() => null);
 
   const { backlinks, unlinked, allTitles, suggestedLinks, refreshBacklinks, removeUnlinked } = useNoteRelations(note.id, note.title);
 
@@ -191,6 +130,7 @@ function NoteEditorView({
     docId: note.id,
     titleRef,
     contentRef,
+    getContent: getMarkdownRef,
     tagsRef,
     savedTagsRef,
     onStateChange: setSaveState,
@@ -218,7 +158,7 @@ function NoteEditorView({
       removeUnlinked(sourceId);
       refreshBacklinks();
     } catch (err) {
-      alert('创建链接失败：' + (err as Error).message);
+      toast.error('创建链接失败：' + (err as Error).message);
     }
   };
 
@@ -229,6 +169,19 @@ function NoteEditorView({
     doc: { id: string; title: string; type: string; snippet: string } | null;
   } | null>(null);
 
+  // 点击卡片外任意位置关闭（此前只能靠 onMouseLeave，触屏/键盘用户无法关闭）
+  useEffect(() => {
+    if (!wikilinkPreview) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-wikilink-preview]')) return;
+      if (target?.closest('.kb-wikilink')) return; // 点击其他双链时由 handleClick 重建预览
+      setWikilinkPreview(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [wikilinkPreview]);
+
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -237,8 +190,9 @@ function NoteEditorView({
       Collaboration.configure({ document: ydoc }),
     ],
     content: '',
-    onUpdate: ({ editor }) => {
-      contentRef.current = (editor.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ?? '';
+    onUpdate: () => {
+      // 序列化延迟到保存时刻执行（getMarkdownRef）：此前每个按键都对全文档
+      // getMarkdown()（O(文档大小)），长文打字可感卡顿
       scheduleSave();
     },
     editorProps: {
@@ -276,42 +230,67 @@ function NoteEditorView({
     },
   });
 
-  // 协作 sync 后播种本地内容（仅一次）
+  // 保存时刻的正文取值器：编辑器就绪后从 TipTap 惰性序列化 Markdown
   useEffect(() => {
-    const onSync = (isSynced: boolean) => {
-      if (!isSynced) return;
-      if (seededRef.current) return;
-      seededRef.current = true;
-      const full = fullContentRef.current;
-      if (editor && editor.isEmpty && full) {
-        editor.commands.setContent(full);
+    if (!editor) return;
+    getMarkdownRef.current = () => {
+      try {
+        if (editor.isDestroyed) return null;
+        return (
+          (editor.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ??
+          null
+        );
+      } catch {
+        return null;
       }
     };
-    provider.on('sync', onSync);
     return () => {
-      provider.off('sync', onSync);
+      getMarkdownRef.current = () => null;
     };
-  }, [provider, editor]);
+  }, [editor]);
 
-  // 全文加载：列表为摘要模式，编辑前先经 detail 接口取完整正文；晚于 collab sync 到达时补种
+  // 播种调度器（合并自原 sync 回调 + 全文加载两个 effect）：
+  // 等"协作已同步"与"全文已到达"两个条件都满足后，仅当编辑器仍为空时注入全文。
+  // 修复了旧实现中"sync 先到会置位单旗、导致后到的全文永不注入"的时序漏洞。
   useEffect(() => {
+    if (!editor) return;
     let cancelled = false;
+    let synced = false;
+    let gotFull = false;
+    let fullText: string | null = null;
+
+    const trySeed = () => {
+      if (cancelled || seededRef.current) return;
+      if (!synced || !gotFull) return;
+      seededRef.current = true;
+      if (editor.isEmpty && fullText) {
+        editor.commands.setContent(fullText);
+      }
+    };
+
+    const onSync = (isSynced: boolean) => {
+      if (!isSynced) return;
+      synced = true;
+      trySeed();
+    };
+    provider.on('sync', onSync);
+
     getDocument(note.id)
-      .then((full) => {
+      .then((doc) => {
         if (cancelled) return;
-        fullContentRef.current = full.content || '';
-        contentRef.current = full.content || '';
-        if (!seededRef.current) {
-          if (editor && editor.isEmpty && fullContentRef.current) {
-            editor.commands.setContent(fullContentRef.current);
-          }
-        }
+        fullText = doc.content || '';
+        fullContentRef.current = fullText;
+        contentRef.current = fullText;
+        gotFull = true;
+        trySeed();
       })
       .catch((err) => console.warn('加载笔记全文失败:', err));
+
     return () => {
       cancelled = true;
+      provider.off('sync', onSync);
     };
-  }, [editor, note.id]);
+  }, [provider, editor, note.id]);
 
   // 失焦强制落盘：仅在确有未保存修改时发请求
   useEffect(() => {
@@ -407,16 +386,6 @@ function NoteEditorView({
     );
   }, [slash]);
 
-  // 删除已输入的 "/词" 文本
-  const removeSlashText = (query: string) => {
-    if (!editor) return;
-    const pos = editor.state.selection.from;
-    const start = pos - query.length - 1;
-    if (start >= 0) {
-      editor.chain().focus().deleteRange({ from: start, to: pos }).run();
-    }
-  };
-
   const applySlash = (index?: number) => {
     if (!editor || !slash) return;
     const item = slashItems[Math.min(index ?? slash.index, slashItems.length - 1)];
@@ -436,7 +405,7 @@ function NoteEditorView({
       if (e.isComposing) return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        removeSlashText(slash.query);
+        // 仅关闭菜单，保留用户已输入的文本（此前会删掉「/词」，违反直觉）
         setSlash(null);
         return;
       }
@@ -484,11 +453,18 @@ function NoteEditorView({
     scheduleSave();
   };
 
+  const [workflowState, setWorkflowState] = useState<string>(
+    (note.meta as { workflow?: string } | undefined)?.workflow || 'inbox',
+  );
+
   const updateWorkflow = async (workflow: 'inbox' | 'review' | 'done') => {
+    const prev = workflowState;
+    setWorkflowState(workflow); // 乐观更新：徽章立即反映选择
     try {
       await patchDocument(note.id, { meta: { ...(note.meta || {}), workflow } });
     } catch (err) {
-      alert('更新工作流失败：' + (err as Error).message);
+      setWorkflowState(prev); // 失败回滚
+      toast.error('更新工作流失败：' + (err as Error).message);
     }
   };
 
@@ -543,7 +519,17 @@ function NoteEditorView({
   const btn = (active: boolean) =>
     `p-1.5 rounded transition-colors ${active ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:bg-gray-100'}`;
 
-  const workflow = (note.meta as { workflow?: string } | undefined)?.workflow || 'inbox';
+  // 返回列表前先等在途/待触发的保存落地：父级刷新列表时能读到最新内容
+  const handleBack = useCallback(async () => {
+    try {
+      await flushSave();
+    } catch {
+      // flush 失败不阻塞返回（离线场景由队列兜底）
+    }
+    onBack();
+  }, [flushSave, onBack]);
+
+  const workflow = workflowState;
   const setWorkflow = (next: 'inbox' | 'review' | 'done') => {
     void updateWorkflow(next);
   };
@@ -551,7 +537,7 @@ function NoteEditorView({
   return (
     <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-        <button onClick={onBack} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors">
+        <button onClick={() => void handleBack()} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors">
           <ArrowLeft className="w-4 h-4" />
           返回列表
         </button>
@@ -688,44 +674,18 @@ function NoteEditorView({
         <EditorContent editor={editor} />
 
         {/* [[ 联想浮层 */}
-        {mention && mentionCandidates.length > 0 && (
-          <div
-            className="absolute z-20 w-64 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
-            style={{ top: mention.top + 24, left: mention.left }}
-          >
-            {mentionCandidates.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => insertMention(c.title)}
-                className="block w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-primary-50 truncate"
-              >
-                {c.title}
-              </button>
-            ))}
-          </div>
+        {mention && (
+          <MentionMenu state={mention} candidates={mentionCandidates} onSelect={insertMention} />
         )}
 
         {/* 斜杠命令浮层 */}
-        {slash && slashItems.length > 0 && (
-          <div
-            className="absolute z-30 w-72 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden"
-            style={{ top: slash.top + 24, left: slash.left }}
-          >
-            {slashItems.map((item, i) => (
-              <button
-                key={item.id}
-                onMouseEnter={() => setSlash((s) => (s ? { ...s, index: i } : s))}
-                onClick={() => applySlash(i)}
-                className={`flex w-full items-center gap-2.5 text-left px-3 py-2 text-sm transition-colors ${
-                  i === slash.index ? 'bg-primary-50 text-primary-700' : 'text-gray-700 hover:bg-gray-50'
-                }`}
-              >
-                <span className="text-gray-400">{item.icon}</span>
-                <span className="font-medium">{item.label}</span>
-                <span className="ml-auto text-xs text-gray-400">{item.hint}</span>
-              </button>
-            ))}
-          </div>
+        {slash && (
+          <SlashMenu
+            state={slash}
+            items={slashItems}
+            onHover={(index) => setSlash((s) => (s ? { ...s, index } : s))}
+            onApply={(index) => applySlash(index)}
+          />
         )}
       </div>
 
@@ -828,6 +788,7 @@ function NoteEditorView({
           className="fixed z-[70] w-72 rounded-lg border border-gray-200 bg-white shadow-xl"
           style={{ left: Math.min(wikilinkPreview.x, window.innerWidth - 300), top: wikilinkPreview.y }}
           onMouseLeave={() => setWikilinkPreview(null)}
+          data-wikilink-preview
         >
           <div className="px-3 py-2.5">
             <p className="text-sm font-medium text-gray-900 truncate">
@@ -860,7 +821,12 @@ function NoteEditorView({
 
       {/* 版本历史抽屉 */}
       {showHistory && (
-        <HistoryDrawer docId={note.id} onClose={() => setShowHistory(false)} onRestored={handleRestored} />
+        <HistoryDrawer
+          docId={note.id}
+          onClose={() => setShowHistory(false)}
+          onRestored={handleRestored}
+          beforeRestore={flushSave}
+        />
       )}
 
       {/* 书籍引用弹窗 */}
