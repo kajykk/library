@@ -41,5 +41,6 @@ server/e2e-*/
 node_modules/.cache/
 test-results/
 playwright-report/
+coverage/
 e2e/fixtures/*.epub
 e2e/fixtures/*.md
