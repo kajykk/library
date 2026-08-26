@@ -33,6 +33,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import BookEditModal from '@/components/BookEditModal';
 import StatisticsPanel from '@/components/StatisticsPanel';
+import { useDialog, useToast } from '@/components/ui';
 
 export default function LibraryPage() {
   return (
@@ -58,6 +59,8 @@ function LibraryPageInner() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
+  const dialog = useDialog();
+  const toast = useToast();
   const authorFilter = searchParams.get('author') || '';
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -215,12 +218,19 @@ function LibraryPageInner() {
   };
 
   const handleDeleteBook = async (book: Book) => {
-    if (!confirm(`确定要删除《${book.title}》吗？`)) return;
+    const ok = await dialog.confirm({
+      title: '删除书籍',
+      message: `确定要删除《${book.title}》吗？`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
 
     try {
       await deleteBookCompletely(book);
       await refetchLibrary();
       setActionError(null);
+      toast.success('已删除《' + book.title + '》');
     } catch (error) {
       setActionError((error as Error).message || '删除书籍失败');
     }
@@ -230,7 +240,7 @@ function LibraryPageInner() {
     const name = newCategoryName.trim();
     if (!name) return;
     if (categories.some((c) => c.name === name)) {
-      alert(`分类"${name}"已存在`);
+      toast.error(`分类"${name}"已存在`);
       return;
     }
 
@@ -239,13 +249,20 @@ function LibraryPageInner() {
       setNewCategoryName('');
       setShowAddCategory(false);
       await refetchLibrary();
+      toast.success(`分类"${name}"已添加`);
     } catch (error) {
-      alert((error as Error).message);
+      toast.error((error as Error).message);
     }
   };
 
   const handleDeleteCategory = async (category: Category) => {
-    if (!confirm(`确定要删除分类"${category.name}"吗？该分类下的书籍将变为未分类。`)) return;
+    const ok = await dialog.confirm({
+      title: '删除分类',
+      message: `确定要删除分类"${category.name}"吗？该分类下的书籍将变为未分类。`,
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteCategoryAndReset(category);
     } catch (error) {
@@ -259,16 +276,28 @@ function LibraryPageInner() {
   };
 
   const handleExport = async () => {
-    if (!confirm('备份包含书目、分类、书签、笔记、阅读记录和封面，但不包含书籍文件本身（文件保留在浏览器本地存储中）。继续导出？')) return;
+    const ok = await dialog.confirm({
+      title: '备份数据',
+      message:
+        '备份包含书目、分类、书签、笔记、阅读记录和封面，但不包含书籍文件本身（文件保留在浏览器本地存储中）。继续导出？',
+      confirmText: '导出备份',
+    });
+    if (!ok) return;
 
-    const data = await exportData();
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ebook_backup_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const data = await exportData();
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ebook_backup_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('备份已下载');
+    } catch (error) {
+      // 此前无 catch：导出失败成为未处理 rejection，用户零反馈
+      toast.error('备份导出失败：' + (error as Error).message);
+    }
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -276,14 +305,15 @@ function LibraryPageInner() {
     if (!file) return;
 
     const reader = new FileReader();
+    reader.onerror = () => toast.error('读取备份文件失败');
     reader.onload = async (event) => {
       try {
         const data = event.target?.result as string;
         await importData(data);
         await refetchLibrary();
-        alert('数据恢复成功！已与现有数据合并（不会删除现有条目）。');
+        toast.success('数据恢复成功！已与现有数据合并（不会删除现有条目）。');
       } catch (error) {
-        alert('数据恢复失败：' + (error as Error).message);
+        toast.error('数据恢复失败：' + (error as Error).message);
       }
     };
     reader.readAsText(file);
@@ -306,26 +336,43 @@ function LibraryPageInner() {
 
   const visibleBooks = filteredBooks.slice(0, visibleCount);
 
+  // 分类计数：一次遍历建 Map。此前写在侧栏渲染循环里，O(分类数×书数) 且每次渲染重算
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    books.forEach((b) => {
+      counts.set(b.category, (counts.get(b.category) || 0) + 1);
+    });
+    return counts;
+  }, [books]);
+
   // 封面按需加载：只为当前可见区（含预取 1 页）拉取，避免大书库全量请求
+  // inflight 去重：快速切换过滤条件导致 effect 重跑时，同一本书不重复发起请求
+  const inflightCoversRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const targets = visibleBooks
       .concat(filteredBooks.slice(visibleCount, visibleCount + PAGE_STEP))
-      .filter((b) => !coverUrls[b.id]);
+      .filter((b) => !coverUrls[b.id] && !inflightCoversRef.current.has(b.id));
     if (targets.length === 0) return;
     let cancelled = false;
-    targets.forEach(async (book) => {
-      const url = await getBookCoverUrl(book.id);
-      if (!cancelled && url) {
-        setCoverUrls((prev) => {
-          if (prev[book.id]) return prev;
-          // 请求期间书籍已被删除/移出书库 → 直接回收该 blob URL
-          if (!liveBookIdsRef.current.has(book.id)) {
-            URL.revokeObjectURL(url);
-            return prev;
-          }
-          return { ...prev, [book.id]: url };
+    targets.forEach((book) => {
+      inflightCoversRef.current.add(book.id);
+      getBookCoverUrl(book.id)
+        .then((url) => {
+          if (cancelled || !url) return;
+          setCoverUrls((prev) => {
+            if (prev[book.id]) return prev;
+            // 请求期间书籍已被删除/移出书库 → 直接回收该 blob URL
+            if (!liveBookIdsRef.current.has(book.id)) {
+              URL.revokeObjectURL(url);
+              return prev;
+            }
+            return { ...prev, [book.id]: url };
+          });
+        })
+        .catch((err) => console.warn('加载封面失败:', book.id, err))
+        .finally(() => {
+          inflightCoversRef.current.delete(book.id);
         });
-      }
     });
     return () => {
       cancelled = true;
@@ -531,13 +578,13 @@ function LibraryPageInner() {
                     <div className="flex items-center justify-between">
                       <span>{category.name}</span>
                       <span className="text-sm text-gray-500">
-                        {books.filter(b => b.category === category.name).length}
+                        {categoryCounts.get(category.name) ?? 0}
                       </span>
                     </div>
                   </button>
                   <button
                     onClick={() => handleDeleteCategory(category)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-all"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-1 hover:bg-red-100 rounded transition-all"
                   >
                     <Trash2 className="w-3 h-3 text-red-500" />
                   </button>
@@ -657,8 +704,8 @@ function LibraryPageInner() {
                           </div>
                         )}
                         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
-                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button className="w-full py-2 bg-white/90 text-gray-900 rounded text-sm font-medium hover:bg-white transition-colors">
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                          <button onClick={() => openReader(book)} className="w-full py-2 bg-white/90 text-gray-900 rounded text-sm font-medium hover:bg-white transition-colors">
                             开始阅读
                           </button>
                         </div>
@@ -736,7 +783,7 @@ function LibraryPageInner() {
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                         <button
                           onClick={() => openReader(book)}
                           className="p-2 hover:bg-primary-50 text-primary-600 rounded-lg transition-colors"

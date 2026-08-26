@@ -19,8 +19,9 @@ import {
   parseMobiChapters,
   ParsedChapter,
 } from '@/lib/parsers/foliate';
-import { 
-  ChevronLeft, 
+import { useDialog, useToast } from '@/components/ui';
+import {
+  ChevronLeft,
   ChevronRight, 
   Bookmark as BookmarkIcon, 
   BookmarkPlus,
@@ -46,6 +47,8 @@ const CHAPTERED_FORMATS = ['epub', 'mobi', 'azw3'];
 const isChapteredFormat = (format: string) => CHAPTERED_FORMATS.includes(format);
 
 export default function BookReader({ book, onClose, initialPositionOverride }: BookReaderProps) {
+  const dialog = useDialog();
+  const toast = useToast();
   const initialPosition =
     initialPositionOverride ?? book.lastPosition ?? (book.format === 'pdf' ? 1 : 0);
   const [currentPage, setCurrentPage] = useState(initialPosition);
@@ -73,6 +76,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const contentRef = useRef<HTMLDivElement>(null);
   const txtLinesRef = useRef<string[] | null>(null);
   const pdfDocRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(null);
+  // PDF 生命周期清理：退出阅读器时销毁文档与 loadingTask，释放 pdf.js worker 内存
+  const pdfCleanupRef = useRef<(() => void) | null>(null);
   // 追踪在途的进度保存，关闭阅读器前等待其落地，避免书架首拉读到旧值
   const lastSaveRef = useRef<Promise<unknown>>(Promise.resolve());
   // PDF 页面渲染缓存（dataURL，最多保留 12 页）+ 渲染序号防快速翻页乱序
@@ -104,6 +109,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   useEffect(() => {
     const bookId = book.id;
     const startPosition = initialPositionRef.current;
+    const pageCache = pdfPageCache.current; // 实例恒定，捕获以供清理使用
     loadContent();
     loadAnnotations();
     readingStartTimeRef.current = Date.now();
@@ -120,6 +126,11 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
           Math.max(0, currentPageRef.current - startPosition),
         ).catch((err) => console.error('保存阅读记录失败:', err));
       }
+      // 释放 pdf.js 资源与页面缓存（多次进出 PDF 阅读器不再叠加泄漏）
+      pdfCleanupRef.current?.();
+      pdfCleanupRef.current = null;
+      pdfDocRef.current = null;
+      pageCache.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -208,6 +219,19 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
 
       const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
       const pdf = await loadingTask.promise;
+
+      pdfCleanupRef.current = () => {
+        try {
+          pdf.destroy();
+        } catch {
+          /* 已销毁则忽略 */
+        }
+        try {
+          loadingTask.destroy();
+        } catch {
+          /* 已销毁则忽略 */
+        }
+      };
 
       setTotalPages(pdf.numPages);
       pdfDocRef.current = pdf;
@@ -337,7 +361,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const created = await addBookmarkAnnotation(book.id, currentPage, chapterKey, note);
       setAnnotations((prev) => [created, ...prev]);
     } catch (err) {
-      alert('添加书签失败：' + (err as Error).message);
+      toast.error('添加书签失败：' + (err as Error).message);
     }
   };
 
@@ -347,7 +371,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const created = await addNoteAnnotation(book.id, currentPage, chapterKey, newNoteContent.trim());
       setAnnotations((prev) => [created, ...prev]);
     } catch (err) {
-      alert('添加笔记失败：' + (err as Error).message);
+      toast.error('添加笔记失败：' + (err as Error).message);
       return;
     }
     setNewNoteContent('');
@@ -358,7 +382,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     try {
       await dsDeleteAnnotation(annotation);
     } catch (err) {
-      alert('删除失败：' + (err as Error).message);
+      toast.error('删除失败：' + (err as Error).message);
       return;
     }
     setAnnotations((prev) => prev.filter((a) => a.id !== annotation.id));
@@ -429,7 +453,10 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
 
     let note = '';
     if (withNote) {
-      const input = prompt('批注内容（可留空）：');
+      const input = await dialog.prompt({
+        title: '添加批注',
+        message: '为这条划线补充批注内容（可留空）：',
+      });
       if (input === null) return;
       note = input.trim();
     }
@@ -437,8 +464,9 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const created = await createHighlight(book.id, chapterKey, currentPage, text, note);
       setAnnotations((prev) => [created, ...prev]);
       applyHighlightMark(text, created.id);
+      toast.success('划线已保存');
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   };
 
@@ -473,31 +501,60 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
 
   // ---------- 书内搜索 ----------
 
-  const runBookSearch = (q: string) => {
-    const query = q.trim();
-    if (!query) {
-      setBookSearchResults([]);
-      return;
-    }
-    const results: Array<{ chapter: number; title: string; before: string; match: string; after: string }> = [];
-    epubContent.forEach((ch, i) => {
-      const div = document.createElement('div');
-      // 章节内容来自外部 EPUB/MOBI 文件，必须先经 DOMPurify 净化再解析，防止书内搜索路径注入脚本
+  // 章节纯文本缓存：首次搜索时构建一次；epubContent 变化（换书）后自动失效。
+  // 避免每次按键都对全书重建 DOM + sanitize（大书直接卡死）。
+  const chapterTextsRef = useRef<{ source: ParsedChapter[]; texts: string[] } | null>(null);
+
+  const getChapterTexts = useCallback((): string[] => {
+    const cached = chapterTextsRef.current;
+    if (cached && cached.source === epubContent) return cached.texts;
+    const div = document.createElement('div');
+    const texts = epubContent.map((ch) => {
+      // 章节内容来自外部 EPUB/MOBI 文件，必须先经 DOMPurify 净化再解析
       div.innerHTML = DOMPurify.sanitize(ch.content);
-      const text = (div.textContent || '').replace(/\s+/g, ' ');
-      const idx = text.toLowerCase().indexOf(query.toLowerCase());
-      if (idx >= 0) {
-        results.push({
-          chapter: i,
-          title: ch.title,
-          before: text.slice(Math.max(0, idx - 30), idx),
-          match: text.slice(idx, idx + query.length),
-          after: text.slice(idx + query.length, idx + query.length + 40),
-        });
-      }
+      return (div.textContent || '').replace(/\s+/g, ' ');
     });
-    setBookSearchResults(results.slice(0, 50));
-  };
+    chapterTextsRef.current = { source: epubContent, texts };
+    return texts;
+  }, [epubContent]);
+
+  const runBookSearch = useCallback(
+    (q: string) => {
+      const query = q.trim();
+      if (!query) {
+        setBookSearchResults([]);
+        return;
+      }
+      const texts = getChapterTexts();
+      const lowerQuery = query.toLowerCase();
+      const results: Array<{ chapter: number; title: string; before: string; match: string; after: string }> = [];
+      for (let i = 0; i < epubContent.length && results.length < 50; i++) {
+        const text = texts[i];
+        const lowerText = text.toLowerCase();
+        let idx = lowerText.indexOf(lowerQuery);
+        // 每章报告全部命中（此前只报第一个）
+        while (idx >= 0 && results.length < 50) {
+          results.push({
+            chapter: i,
+            title: epubContent[i].title,
+            before: text.slice(Math.max(0, idx - 30), idx),
+            match: text.slice(idx, idx + query.length),
+            after: text.slice(idx + query.length, idx + query.length + 40),
+          });
+          idx = lowerText.indexOf(lowerQuery, idx + query.length);
+        }
+      }
+      setBookSearchResults(results);
+    },
+    [epubContent, getChapterTexts],
+  );
+
+  // 输入防抖 250ms：停止输入后再扫描全书
+  useEffect(() => {
+    if (!showBookSearch) return;
+    const timer = setTimeout(() => runBookSearch(bookSearchQuery), 250);
+    return () => clearTimeout(timer);
+  }, [bookSearchQuery, showBookSearch, runBookSearch]);
 
   const jumpToSearchResult = (chapter: number, query: string) => {
     setShowBookSearch(false);
@@ -600,6 +657,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       return;
     }
     if (isTyping) return;
+    // 带修饰键的组合键一律放行：不劫持浏览器/系统快捷键（Ctrl+F 查找、Ctrl+S 保存、Ctrl+P 打印等）
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'ArrowLeft') {
       handlePageChange(currentPage - 1);
     } else if (e.key === 'ArrowRight') {
@@ -631,6 +690,13 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const sanitizedHtml = useMemo(
     () => (book.format === 'txt' ? '' : DOMPurify.sanitize(content)),
     [content, book.format]
+  );
+
+  // 连续滚动模式：净化结果按 epubContent 记忆化。
+  // 此前写在渲染体里，改变字号等任意 setState 都会对全书重新 sanitize + 全量 reconcile。
+  const scrollSanitizedChapters = useMemo(
+    () => epubContent.map((ch) => ({ href: ch.href, title: ch.title, html: DOMPurify.sanitize(ch.content) })),
+    [epubContent],
   );
 
   const getPageLabel = () => {
@@ -778,10 +844,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
                 <input
                   type="text"
                   value={bookSearchQuery}
-                  onChange={(e) => {
-                    setBookSearchQuery(e.target.value);
-                    runBookSearch(e.target.value);
-                  }}
+                  onChange={(e) => setBookSearchQuery(e.target.value)}
                   placeholder="在全书内容中搜索..."
                   autoFocus
                   className="flex-1 text-sm outline-none py-1"
@@ -825,15 +888,17 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
               <div className="text-center py-12 text-gray-500">加载中...</div>
             ) : isChapteredFormat(book.format) && scrollMode ? (
               <div className="space-y-10">
-                {epubContent.map((ch, i) => (
-                  <section key={ch.href} data-chapter={i}>
+                {scrollSanitizedChapters.map((ch, i) => (
+                  <section
+                    key={ch.href}
+                    data-chapter={i}
+                    // content-visibility:auto：视口外章节跳过渲染/排版，长书滚动性能提升一个量级
+                    style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 800px' } as React.CSSProperties}
+                  >
                     <h2 className="text-lg font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-100">
                       {ch.title}
                     </h2>
-                    <div
-                      className="prose max-w-none"
-                      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(ch.content) }}
-                    />
+                    <div className="prose max-w-none" dangerouslySetInnerHTML={{ __html: ch.html }} />
                   </section>
                 ))}
               </div>
@@ -869,7 +934,11 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
                     <input
                       type="number"
                       value={currentPage}
-                      onChange={(e) => handlePageChange(parseInt(e.target.value) || 0)}
+                      onChange={(e) => {
+                        // 清空/半输入状态（NaN）时忽略，避免误跳第 0 页
+                        const parsed = Number.parseInt(e.target.value, 10);
+                        if (!Number.isNaN(parsed)) handlePageChange(parsed);
+                      }}
                       className="w-16 px-2 py-1 text-center border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 outline-none"
                       min={book.format === 'pdf' ? 1 : 0}
                       max={book.format === 'pdf' ? totalPages : Math.max(totalPages - 1, 0)}

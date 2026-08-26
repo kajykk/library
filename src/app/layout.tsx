@@ -30,11 +30,12 @@ export default function RootLayout({
       <body className="antialiased">
         <ServiceWorkerRegister />
         <Providers>
+          {/* Nav 置于错误边界之外：页面崩溃时导航仍然可用，用户不会被错误页困住 */}
+          <Nav />
           <ErrorBoundary>
-            <Nav />
             {children}
-            <CommandPalette />
           </ErrorBoundary>
+          <CommandPalette />
         </Providers>
       </body>
     </html>

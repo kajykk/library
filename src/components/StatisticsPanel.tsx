@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, memo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Book, ReadingRecord, getBooks, getAllReadingRecords } from '@/lib/db';
 import { formatDuration } from '@/lib/utils';
 import { getStats, StatsOut, getAuthors, AuthorStat, getHealthStats, HealthOut } from '@/lib/api/client';
-import { resolveMode } from '@/lib/dataSource';
+import { useDataSourceMode } from '@/lib/useDataSourceMode';
 import { X, BookOpen, Clock, TrendingUp, Calendar, User, HeartPulse } from 'lucide-react';
 
 interface StatisticsPanelProps {
@@ -22,37 +22,53 @@ function heatColor(minutes: number): string {
   return 'bg-primary-700';
 }
 
-export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
+/** 本地时区 yyyy-mm-dd：统一"最近阅读"与热力图的日期桶口径（此前一边本地时区、一边 UTC，晚间阅读会跨日错位） */
+function toLocalDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function StatisticsPanel({ onClose }: StatisticsPanelProps) {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
   const [records, setRecords] = useState<ReadingRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isApiMode, setIsApiMode] = useState(false);
 
+  // 模式解析共享化：替代面板内手写的 resolveMode 状态机
+  const { mode } = useDataSourceMode();
+
   useEffect(() => {
+    if (mode === null) return; // 解析中保持加载态
     let cancelled = false;
     (async () => {
       setIsLoading(true);
-      const mode = await resolveMode();
-      if (cancelled) return;
-      if (mode !== 'api') {
-        const [loadedBooks, loadedRecords] = await Promise.all([
-          getBooks(),
-          getAllReadingRecords(),
-        ]);
-        if (cancelled) return;
-        setBooks(loadedBooks);
-        setRecords(loadedRecords);
-        setIsApiMode(false);
-      } else {
-        setIsApiMode(true);
+      try {
+        if (mode !== 'api') {
+          const [loadedBooks, loadedRecords] = await Promise.all([
+            getBooks(),
+            getAllReadingRecords(),
+          ]);
+          if (cancelled) return;
+          setBooks(loadedBooks);
+          setRecords(loadedRecords);
+          setIsApiMode(false);
+        } else {
+          setIsApiMode(true);
+        }
+      } catch (err) {
+        // 此前无 try/catch：IndexedDB 拒绝会让 isLoading 永远为 true，面板卡在加载态
+        console.error('加载统计数据失败:', err);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-      setIsLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mode]);
 
   const apiStats = useQuery({ queryKey: ['stats'], queryFn: getStats, enabled: isApiMode }).data ?? null;
   const authors = useQuery({ queryKey: ['authors'], queryFn: getAuthors, enabled: isApiMode }).data ?? [];
@@ -79,34 +95,57 @@ export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
         return acc;
       }, {} as Record<string, number>);
 
-  const readingByDay = apiStats
-    ? apiStats.recent_days.map((d) => [d.date, d.minutes] as const)
-    : Object.entries(
-        records.reduce((acc, record) => {
-          const date = new Date(record.startTime).toLocaleDateString('zh-CN');
-          const duration = (record.endTime - record.startTime) / 60000;
-          acc[date] = (acc[date] || 0) + duration;
-          return acc;
-        }, {} as Record<string, number>)
-      );
+  const readingByDay = useMemo(
+    () =>
+      apiStats
+        ? apiStats.recent_days.map((d) => [d.date, d.minutes] as const)
+        : Object.entries(
+            records.reduce((acc, record) => {
+              const date = toLocalDateKey(new Date(record.startTime));
+              const duration = (record.endTime - record.startTime) / 60000;
+              acc[date] = (acc[date] || 0) + duration;
+              return acc;
+            }, {} as Record<string, number>),
+          // 按日期倒序：此前对象 entries 顺序=首次遇到序，slice(0,7) 并非"最近"7 天
+          ).sort((a, b) => (a[0] < b[0] ? 1 : -1)),
+    [apiStats, records],
+  );
 
-  // 阅读日历热力图：最近 365 天
-  const heatmapDays = apiStats
-    ? apiStats.heatmap
-    : (() => {
-        const map = new Map<string, number>();
-        records.forEach((r) => {
-          const d = new Date(r.startTime).toISOString().slice(0, 10);
-          map.set(d, (map.get(d) || 0) + (r.endTime - r.startTime) / 60000);
-        });
-        const days: Array<{ date: string; minutes: number }> = [];
-        const now = new Date();
-        for (let i = 364; i >= 0; i--) {
-          const d = new Date(now.getTime() - i * 86400000);
-          days.push({ date: d.toISOString().slice(0, 10), minutes: Math.round(map.get(d.toISOString().slice(0, 10)) || 0) });
-        }
-        return days;
-      })();
+  // 阅读日历热力图：最近 365 天（本地时区日期键）
+  const heatmapDays = useMemo(
+    () =>
+      apiStats
+        ? apiStats.heatmap
+        : (() => {
+            const map = new Map<string, number>();
+            records.forEach((r) => {
+              const key = toLocalDateKey(new Date(r.startTime));
+              map.set(key, (map.get(key) || 0) + (r.endTime - r.startTime) / 60000);
+            });
+            const days: Array<{ date: string; minutes: number }> = [];
+            const now = new Date();
+            for (let i = 364; i >= 0; i--) {
+              const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+              const key = toLocalDateKey(d);
+              days.push({ date: key, minutes: Math.round(map.get(key) || 0) });
+            }
+            return days;
+          })(),
+    [apiStats, records],
+  );
+
+  // 前置填充使第一列从周一开始，与「一/三/五/日」标签对齐（此前大概率错位 1~6 格）
+  const heatmapColumns = useMemo(() => {
+    if (!heatmapDays || heatmapDays.length === 0) return [] as Array<{ date: string; minutes: number } | null>[];
+    const firstDow = (new Date(`${heatmapDays[0].date}T00:00:00`).getDay() + 6) % 7; // 周一=0
+    const padded: Array<{ date: string; minutes: number } | null> = [
+      ...Array.from({ length: firstDow }, () => null),
+      ...heatmapDays,
+    ];
+    return Array.from({ length: Math.ceil(padded.length / 7) }, (_, week) =>
+      padded.slice(week * 7, week * 7 + 7),
+    );
+  }, [heatmapDays]);
 
   const topTags = apiStats ? apiStats.top_tags : [];
 
@@ -256,10 +295,9 @@ export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
               ))}
             </div>
             <div className="flex gap-1.5 overflow-x-auto pb-1">
-              {Array.from({ length: Math.ceil(heatmapDays.length / 7) }, (_, week) => (
-                <div key={week} className="flex flex-col gap-1.5">
-                  {Array.from({ length: 7 }, (_, dow) => {
-                    const day = heatmapDays[week * 7 + dow];
+              {heatmapColumns.map((week, weekIdx) => (
+                <div key={weekIdx} className="flex flex-col gap-1.5">
+                  {week.map((day, dow) => {
                     if (!day) return <span key={dow} className="w-[10px] h-[10px]" />;
                     return (
                       <span
@@ -373,3 +411,6 @@ export default function StatisticsPanel({ onClose }: StatisticsPanelProps) {
     </div>
   );
 }
+
+// memo：面板派生计算较重（热力图/聚合），父页任意 setState 不应触发其重渲
+export default memo(StatisticsPanel);

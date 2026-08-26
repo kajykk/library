@@ -41,15 +41,22 @@ function ReaderPageInner() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     getBookById(params.id)
       .then((b) => {
+        if (cancelled) return; // id 快速变化时丢弃过期响应
         if (b) {
           setBook(b);
         } else {
           setError('未找到该文档：可能已被删除，或后端不可用时本地库中没有此书');
         }
       })
-      .catch((e) => setError((e as Error).message));
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [params.id]);
 
   if (error) {

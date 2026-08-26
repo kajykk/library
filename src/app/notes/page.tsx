@@ -15,8 +15,9 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { ApiDocument, listDocuments, createDocument, patchDocument, deleteDocument, downloadMarkdownExport } from '@/lib/api/client';
-import { resolveMode } from '@/lib/dataSource';
+import { useDataSourceMode } from '@/lib/useDataSourceMode';
 import NoteEditor from '@/components/notes/NoteEditor';
+import { useDialog, useToast } from '@/components/ui';
 
 // ---------- 笔记模板 ----------
 
@@ -54,7 +55,6 @@ export default function NotesPage() {
 function NotesPageInner() {
   const [listType, setListType] = useState<'note' | 'webclip'>('note');
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<'api' | 'local' | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [quickTitle, setQuickTitle] = useState('');
@@ -64,10 +64,18 @@ function NotesPageInner() {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const listParentRef = useRef<HTMLDivElement>(null);
+  const dialog = useDialog();
+  const toast = useToast();
+
+  // 模式解析共享化：null 期间渲染加载骨架，避免闪现"还没有笔记"空态
+  const { mode } = useDataSourceMode();
 
   const notesQuery = useQuery({
     queryKey: ['documents', listType],
-    queryFn: () => listDocuments({ type: listType, include_content: 'false' }),
+    // 剪藏展开直接渲染正文（轻量列表模式拿不到内容会显示空）；
+    // 笔记保持轻量摘要，编辑器按需拉全文
+    queryFn: () =>
+      listDocuments({ type: listType, include_content: listType === 'webclip' ? 'true' : 'false' }),
     enabled: mode === 'api',
   });
   const notes = notesQuery.data ?? [];
@@ -106,10 +114,6 @@ function NotesPageInner() {
     overscan: 6,
   });
 
-  useEffect(() => {
-    resolveMode().then(setMode);
-  }, []);
-
   const refetchNotes = () => queryClient.invalidateQueries({ queryKey: ['documents', listType] });
 
   const toggleSelectedNote = (id: string) => {
@@ -146,15 +150,19 @@ function NotesPageInner() {
       ? template.content(new Date().toLocaleDateString('zh-CN'))
       : quickContent;
     const title = (template ? template.name : quickTitle).trim() || '无标题笔记';
-    const doc = await createDocument({
-      type: 'note',
-      title,
-      content,
-    });
-    setQuickTitle('');
-    setQuickContent('');
-    refetchNotes();
-    setEditingId(doc.id);
+    try {
+      const doc = await createDocument({
+        type: 'note',
+        title,
+        content,
+      });
+      setQuickTitle('');
+      setQuickContent('');
+      refetchNotes();
+      setEditingId(doc.id);
+    } catch (err) {
+      toast.error('创建笔记失败：' + (err as Error).message);
+    }
   };
 
   const handleDailyNote = async () => {
@@ -188,31 +196,64 @@ function NotesPageInner() {
         results.push(`${file.name}：${(err as Error).message}`);
       }
     }
-    alert(results.join('\n'));
+    toast.info(results.join('\n'));
     refetchNotes();
     e.target.value = '';
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('确定删除这篇笔记吗？')) return;
-    await deleteDocument(id);
-    refetchNotes();
-    if (editingId === id) setEditingId(null);
-    setSelectedNotes((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
+    const ok = await dialog.confirm({
+      title: '删除笔记',
+      message: '确定删除这篇笔记吗？',
+      confirmText: '删除',
+      danger: true,
     });
+    if (!ok) return;
+    try {
+      await deleteDocument(id);
+      refetchNotes();
+      if (editingId === id) setEditingId(null);
+      setSelectedNotes((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      toast.success('笔记已删除');
+    } catch (err) {
+      toast.error('删除失败：' + (err as Error).message);
+    }
   };
 
   const handleBatchArchive = async (workflow: 'review' | 'done') => {
     if (selectedNotes.size === 0) return;
     const ids = [...selectedNotes];
-    if (!confirm(`将选中的 ${ids.length} 篇笔记标记为${workflow === 'review' ? '复盘中' : '已归档'}？`)) return;
-    await Promise.all(ids.map((id) => patchDocument(id, { meta: { ...(notes.find((n) => n.id === id)?.meta || {}), workflow } })));
+    const ok = await dialog.confirm({
+      title: '批量更新工作流',
+      message: `将选中的 ${ids.length} 篇笔记标记为${workflow === 'review' ? '复盘中' : '已归档'}？`,
+      confirmText: '确认',
+    });
+    if (!ok) return;
+    // allSettled：部分失败不中断整体，且给出汇总提示；此前任一失败即未处理 rejection
+    const results = await Promise.allSettled(
+      ids.map((id) =>
+        patchDocument(id, { meta: { ...(notes.find((n) => n.id === id)?.meta || {}), workflow } }),
+      ),
+    );
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    if (failed > 0) {
+      toast.error(`${failed}/${ids.length} 篇笔记更新失败，请重试`);
+    } else {
+      toast.success(`已更新 ${ids.length} 篇笔记`);
+    }
     clearSelection();
     refetchNotes();
   };
+
+  if (mode === null) {
+    return (
+      <main className="max-w-3xl mx-auto px-4 py-12 text-center text-gray-400">加载中...</main>
+    );
+  }
 
   if (mode === 'local') {
     return (
@@ -232,10 +273,9 @@ function NotesPageInner() {
           key={editingId}
           note={note}
           onBack={() => {
+            // NoteEditor 返回前会先 flush 在途保存（handleBack），此处直接刷新即可
             setEditingId(null);
             refetchNotes();
-            // 等卸载时补发的保存落库后再刷一次列表
-            setTimeout(() => refetchNotes(), 1200);
           }}
           onDelete={() => handleDelete(editingId)}
           onOpenNote={(id) => setEditingId(id)}
@@ -296,7 +336,11 @@ function NotesPageInner() {
               今日笔记
             </button>
             <button
-              onClick={() => downloadMarkdownExport().catch((e) => alert('导出失败：' + (e as Error).message))}
+              onClick={() =>
+                downloadMarkdownExport()
+                  .then(() => toast.success('Markdown 备份已下载'))
+                  .catch((e) => toast.error('导出失败：' + (e as Error).message))
+              }
               className="px-4 py-2 border border-gray-200 bg-white text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
               title="导出全部笔记为 Markdown（zip）"
             >
@@ -435,11 +479,13 @@ function NotesPageInner() {
                   key={note.id}
                   data-index={virtualRow.index}
                   ref={rowVirtualizer.measureElement}
-                  className="absolute top-0 left-0 w-full"
+                  // 间距用 padding 实现于被测量元素内：margin 不计入 border-box 高度，
+                  // 会导致虚拟列表定位逐行漂移
+                  className="absolute top-0 left-0 w-full pb-2"
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   <div
-                    className="group bg-white rounded-lg border border-gray-200 p-4 mb-2 hover:shadow-sm transition-shadow cursor-pointer"
+                    className="group bg-white rounded-lg border border-gray-200 p-4 hover:shadow-sm transition-shadow cursor-pointer"
                     onClick={() => setEditingId(note.id)}
                   >
                     <div className="flex items-center justify-between gap-4">

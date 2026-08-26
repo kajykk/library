@@ -5,7 +5,7 @@ import { Search as SearchIcon, FileText, BookOpen, Loader2, X, Clock3 } from 'lu
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { searchApi, SearchHit, getSearchSummary, SearchSummary } from '@/lib/api/client';
-import { resolveMode } from '@/lib/dataSource';
+import { useDataSourceMode } from '@/lib/useDataSourceMode';
 
 const TYPE_LABELS: Record<string, string> = {
   book: '书籍',
@@ -48,16 +48,24 @@ export default function SearchPage() {
   const [summary, setSummary] = useState<SearchSummary | null>(null);
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [mode, setMode] = useState<'api' | 'local' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 响应乱序守卫：只有最新一次搜索允许落盘结果
+  const searchSeqRef = useRef(0);
+
+  const { mode } = useDataSourceMode();
 
   // 键盘导航用的扁平结果（按分组顺序）
   const flatHits = useMemo(
     () => (hits ? TYPE_ORDER.flatMap((t) => hits.filter((h) => h.type === t)) : []),
     [hits],
+  );
+
+  const flatIndexById = useMemo(
+    () => new Map(flatHits.map((hit, i) => [hit.id, i])),
+    [flatHits],
   );
 
   useEffect(() => {
@@ -74,51 +82,53 @@ export default function SearchPage() {
     });
   }, []);
 
-  const runSearch = useCallback(async (q: string, type: string) => {
+  const runSearch = useCallback(async (q: string, type: string, currentMode: 'api' | 'local' | null) => {
     const trimmed = q.trim();
     if (!trimmed) {
+      searchSeqRef.current += 1;
       setHits(null);
       setSummary(null);
       setRecommendations([]);
       setError(null);
-      return;
-    }
-    setIsSearching(true);
-    setError(null);
-    const m = mode ?? (await resolveMode());
-    setMode(m);
-    if (m !== 'api') {
       setIsSearching(false);
       return;
     }
+    if (currentMode === null) return; // 模式解析中：等 mode 就绪后 effect 会重跑
+    if (currentMode !== 'api') return;
+
+    const seq = ++searchSeqRef.current;
+    setIsSearching(true);
+    setError(null);
     try {
       const [result, stat] = await Promise.all([
         searchApi(trimmed, type || undefined),
         getSearchSummary(trimmed).catch(() => null),
       ]);
+      if (seq !== searchSeqRef.current) return; // 已有更新的搜索，丢弃过期响应
       setHits(result);
       setSummary(stat);
       setRecommendations(stat?.suggestions || []);
       if (result.length > 0) recordHistory(trimmed);
     } catch (err) {
+      if (seq !== searchSeqRef.current) return;
       setError((err as Error).message);
       setHits(null);
       setSummary(null);
       setRecommendations([]);
     } finally {
-      setIsSearching(false);
+      if (seq === searchSeqRef.current) setIsSearching(false);
     }
-  }, [mode, recordHistory]);
+  }, [recordHistory]);
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      runSearch(query, typeFilter);
+      void runSearch(query, typeFilter, mode);
     }, 300);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [query, typeFilter, runSearch]);
+  }, [query, typeFilter, mode, runSearch]);
 
   // 结果变化时重置选中
   useEffect(() => {
@@ -285,9 +295,9 @@ export default function SearchPage() {
                 <h2 className="text-sm font-medium text-gray-400 mb-2">
                   {TYPE_LABELS[type] || type}（{group.length}）
                 </h2>
-                <div className="space-y-2">
-                  {group.map((hit) => {
-                    const flatIndex = flatHits.indexOf(hit);
+                 <div className="space-y-2">
+                   {group.map((hit) => {
+                     const flatIndex = flatIndexById.get(hit.id) ?? -1;
                     return (
                       <Link
                         key={hit.id}

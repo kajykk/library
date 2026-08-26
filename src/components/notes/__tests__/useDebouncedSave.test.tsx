@@ -103,23 +103,65 @@ describe('useDebouncedSave', () => {
     expect(mockedPatch).toHaveBeenCalledTimes(1);
   });
 
-  it('卸载时清掉计时器并补发 pending 保存（读取最新终态）', async () => {
+  it('卸载时清掉计时器并补发 pending 保存（读取最新终态，含标签差异）', async () => {
     const o = makeOpts();
     const { result, unmount } = renderHook(() => useDebouncedSave(o));
 
     o.titleRef.current = '最终标题';
     o.contentRef.current = '最终内容';
+    o.tagsRef.current = ['t1', 't9'];
     act(() => result.current.schedule());
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
     expect(mockedPatch).not.toHaveBeenCalled();
 
+    // 卸载补发走保存链（微任务），需等待其落地
     unmount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(mockedPatch).toHaveBeenCalledWith('doc-1', { title: '最终标题', content: '最终内容' });
+    // 补发复用 performSave：包含 tags 差异逻辑（此前卸载补发会丢标签）
+    expect(mockedTags).toHaveBeenCalledWith('doc-1', ['t1', 't9']);
     // 卸载清理已 clearTimeout，之后时间推进不会二次保存
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(mockedPatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('卸载时若无 pending 修改则不产生空写（不污染版本历史）', async () => {
+    const o = makeOpts();
+    const { result, unmount } = renderHook(() => useDebouncedSave(o));
+
+    // 从未编辑：无 schedule、无 pending
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(mockedPatch).not.toHaveBeenCalled();
+    expect(mockedTags).not.toHaveBeenCalled();
+
+    // 已保存完成（pending 已消费）后再卸载，同样不应再发请求
+    act(() => result.current.schedule());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(mockedPatch).toHaveBeenCalledTimes(1);
+    const { unmount: unmount2 } = renderHook(() => useDebouncedSave(o));
+    unmount2();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
     });
     expect(mockedPatch).toHaveBeenCalledTimes(1);
   });

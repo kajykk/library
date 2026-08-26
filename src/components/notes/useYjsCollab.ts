@@ -15,10 +15,10 @@ export interface OnlineUser {
 /**
  * Yjs 实时协作会话。
  *
- * Y.Doc 是纯本地对象，随组件实例惰性创建（供 Collaboration 扩展同步绑定）；
- * WebSocket Provider 是网络资源，在 useEffect 中创建、清理函数中销毁，
- * React StrictMode 双载（mount → cleanup → mount）下旧连接会被完整回收，
- * 第二次挂载重建新 Provider，不会泄漏连接或重复订阅。
+ * WebSocket Provider 是网络资源、Y.Doc 是本地资源，在清理函数中成对销毁。
+ * React StrictMode 双载（mount → cleanup → mount）下旧连接与旧 Doc 都会被
+ * 完整回收（cleanup 中 destroy + 置空），重挂载时按需重建新实例，
+ * 不会泄漏连接、Doc 或重复订阅。
  */
 export function useYjsCollab(docId: string): {
   ydoc: Y.Doc;
@@ -36,6 +36,9 @@ export function useYjsCollab(docId: string): {
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
 
   useEffect(() => {
+    if (!ydocRef.current) {
+      ydocRef.current = new Y.Doc();
+    }
     const ydoc = ydocRef.current as Y.Doc;
     const wsProvider = new WebsocketProvider(getCollabWsUrl(docId), `doc-${docId}`, ydoc, {
       connect: true,
@@ -72,9 +75,15 @@ export function useYjsCollab(docId: string): {
       wsProvider.awareness.off('change', refreshUsers);
       wsProvider.off('status', onStatus);
       wsProvider.destroy();
+      // Doc 与 Provider 成对销毁：否则每打开一篇笔记泄漏一个
+      // Y.Doc（更新日志 + 向量时钟），长时间使用内存持续上涨。
+      ydoc.destroy();
+      ydocRef.current = null;
       setProvider(null);
     };
   }, [docId]);
 
-  return { ydoc: ydocRef.current, provider, status, onlineUsers };
+  // 消费方（NoteEditor）在 provider 就绪前渲染占位、不解引用 ydoc。
+  // 函数体顶部的惰性初始化保证每次渲染时 ref 均非空，断言安全。
+  return { ydoc: ydocRef.current as Y.Doc, provider, status, onlineUsers };
 }

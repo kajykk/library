@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useDialog } from '@/components/ui';
 import Link from 'next/link';
 import {
   getApiBaseUrl,
@@ -21,7 +22,7 @@ import {
 } from '@/lib/api/client';
 import { getBooks, getCategories, exportData, getAllFileRecords, getAllCoverRecords, initDB } from '@/lib/db';
 import { resetModeCache } from '@/lib/dataSource';
-import { ArrowLeft, Settings2, Plug, DatabaseZap, CheckCircle2, XCircle, Loader2, Download, Upload, Globe, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Settings2, Plug, DatabaseZap, CheckCircle2, XCircle, Loader2, Download, Upload, Globe, RefreshCw, Search, ShieldCheck, Sparkles, Gauge, BookOpen } from 'lucide-react';
 
 const CHECK_LABELS: Record<string, string> = {
   database: '数据库',
@@ -38,6 +39,7 @@ interface MigrationState {
 }
 
 export default function SettingsPage() {
+  const dialog = useDialog();
   const [apiBase, setApiBase] = useState('');
   const [apiToken, setApiToken] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'ok' | 'fail' | 'testing'>('unknown');
@@ -51,26 +53,39 @@ export default function SettingsPage() {
   const [clipUrlInput, setClipUrlInput] = useState('');
   const [clipMsg, setClipMsg] = useState<string | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
+  const [reindexMsg, setReindexMsg] = useState<string | null>(null);
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [healthChecking, setHealthChecking] = useState(false);
+
+  // running 状态经 ref 读取：interval 内部按最新状态决定是否请求，
+  // 避免依赖 reindex?.running 造成 effect 反复重建、重复立即 poll
+  const reindexRef = useRef(reindex);
+  useEffect(() => {
+    reindexRef.current = reindex;
+  }, [reindex]);
 
   useEffect(() => {
     setApiBase(getApiBaseUrl());
     setApiToken(getApiToken());
+    let cancelled = false;
     const poll = async () => {
       try {
-        setReindex(await getReindexStatus());
+        const status = await getReindexStatus();
+        if (!cancelled) setReindex(status);
       } catch {
         /* 后端未连接时忽略 */
       }
     };
     poll();
     const timer = setInterval(() => {
-      if (!reindex?.running) return;
-      poll();
+      if (!reindexRef.current?.running) return;
+      void poll();
     }, 2000);
-    return () => clearInterval(timer);
-  }, [reindex?.running]);
+    return () => {
+      cancelled = true; // 卸载后在途 setReindex 不再落盘
+      clearInterval(timer);
+    };
+  }, []);
 
   const handleReindex = async () => {
     try {
@@ -81,9 +96,16 @@ export default function SettingsPage() {
           : null,
       );
     } catch (err) {
-      setClipMsg('重建索引失败：' + (err as Error).message);
+      // 独立消息位：此前写入 clipMsg（剪藏区块），跨区块错乱
+      setReindexMsg('重建索引失败：' + (err as Error).message);
     }
   };
+
+  const qualitySignals = [
+    { label: '统一数据源', detail: 'API 优先、离线兜底，减少模式切换成本', icon: ShieldCheck },
+    { label: '渐进式加载', detail: '书库、封面、搜索结果都采用按需加载', icon: Gauge },
+    { label: '知识流转', detail: '书籍、笔记、标注、引用、版本历史互相贯通', icon: BookOpen },
+  ];
 
   const handleSaveAndTest = async () => {
     saveApiConfig(apiBase, apiToken);
@@ -126,7 +148,12 @@ export default function SettingsPage() {
   const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm('恢复将把备份内容合并进当前库（不会删除现有数据，同名条目会被覆盖）。继续？')) {
+    const ok = await dialog.confirm({
+      title: '恢复备份',
+      message: '恢复将把备份内容合并进当前库（不会删除现有数据，同名条目会被覆盖）。继续？',
+      confirmText: '开始恢复',
+    });
+    if (!ok) {
       e.target.value = '';
       return;
     }
@@ -249,12 +276,32 @@ export default function SettingsPage() {
       <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* 连接配置 */}
         <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-1">后端连接</h2>
-          <p className="text-sm text-gray-500 mb-4">个人知识库后端（FastAPI）的地址与访问令牌</p>
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <div>
+              <h2 className="font-semibold text-gray-900">后端连接</h2>
+              <p className="text-sm text-gray-500 mt-1">个人知识库后端（FastAPI）的地址与访问令牌</p>
+            </div>
+            <Sparkles className="w-5 h-5 text-primary-500" />
+          </div>
+          <div className="grid gap-3 md:grid-cols-3 mb-4">
+            {qualitySignals.map((signal) => {
+              const Icon = signal.icon;
+              return (
+                <div key={signal.label} className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-900 mb-1">
+                    <Icon className="w-4 h-4 text-primary-500" />
+                    {signal.label}
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed">{signal.detail}</p>
+                </div>
+              );
+            })}
+          </div>
           <div className="space-y-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">API 地址</label>
+              <label htmlFor="kb-api-base" className="block text-sm font-medium text-gray-700 mb-1">API 地址</label>
               <input
+                id="kb-api-base"
                 type="text"
                 value={apiBase}
                 onChange={(e) => setApiBase(e.target.value)}
@@ -263,8 +310,9 @@ export default function SettingsPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">API Token</label>
+              <label htmlFor="kb-api-token" className="block text-sm font-medium text-gray-700 mb-1">API Token</label>
               <input
+                id="kb-api-token"
                 type="password"
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
@@ -305,6 +353,11 @@ export default function SettingsPage() {
             </button>
           </div>
           <p className="text-sm text-gray-500 mb-4">数据库、全文索引、数据目录与协作库自检</p>
+          {systemHealth && systemHealth.status !== 'ok' && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              系统当前不是最佳状态，建议先排查红色项，再执行索引或迁移。
+            </div>
+          )}
           {systemHealth === null ? (
             <p className="text-sm text-gray-400">尚未检测。保存并测试连接后自动刷新。</p>
           ) : (
@@ -331,7 +384,13 @@ export default function SettingsPage() {
 
         {/* 全文索引 */}
         <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-900 mb-1">全文索引维护</h2>
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <h2 className="font-semibold text-gray-900">全文索引维护</h2>
+            <div className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-1 text-xs text-slate-500 border border-slate-200">
+              <Search className="w-3.5 h-3.5 text-primary-500" />
+              维护知识可检索性
+            </div>
+          </div>
           <p className="text-sm text-gray-500 mb-4">
             为库中书籍提取正文并建立全文搜索索引。首次迁移后建议执行一次；
             任务在后台运行，可在本页随时查看进度。扫描版 PDF 会按单文件时间预算跳过。
@@ -361,6 +420,9 @@ export default function SettingsPage() {
               上次索引完成：处理 {reindex.total} 个文档，更新 {reindex.updated}，跳过 {reindex.skipped}
               {reindex.error ? `；任务出错：${reindex.error}` : ''}
             </div>
+          )}
+          {reindexMsg && (
+            <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{reindexMsg}</div>
           )}
           <button
             onClick={handleReindex}
