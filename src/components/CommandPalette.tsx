@@ -7,6 +7,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiDocument, listDocuments, clipUrl, createDocument, patchDocument, startReindex, downloadBackup } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 import { fuzzyScore } from '@/lib/fuzzy';
+import { useToast, useOverlayA11y } from '@/components/ui';
 
 interface PaletteItem {
   id: string;
@@ -32,12 +33,19 @@ const CLIP_ITEM_ID = '__clip__';
 const DAILY_NOTE_ITEM_ID = '__daily_note__';
 const QUICK_NOTE_ITEM_ID = '__quick_note__';
 
-/** 输入 "剪藏 <URL>"（或 clip <URL>）时返回置顶的剪藏动作项 */
-function parseClipQuery(query: string): PaletteItem | null {
+/** 解析 "剪藏 <URL>"（或 clip <URL>）输入：返回 URL 与有效性，供列表项与执行逻辑共用（避免双份正则漂移） */
+function extractClipUrl(query: string): { url: string; valid: boolean } | null {
   const m = query.trim().match(/^(剪藏|clip)\s+(.+)$/i);
   if (!m) return null;
   const url = m[2].trim();
-  const valid = /^https?:\/\//i.test(url);
+  return { url, valid: /^https?:\/\//i.test(url) };
+}
+
+/** 输入 "剪藏 <URL>" 时返回置顶的剪藏动作项 */
+function parseClipQuery(query: string): PaletteItem | null {
+  const parsed = extractClipUrl(query);
+  if (!parsed) return null;
+  const { url, valid } = parsed;
   return {
     id: CLIP_ITEM_ID,
     title: valid ? `剪藏网页：${url}` : '剪藏网页（输入 http(s):// 开头的 URL）',
@@ -48,6 +56,7 @@ function parseClipQuery(query: string): PaletteItem | null {
 export default function CommandPalette() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
@@ -186,17 +195,16 @@ export default function CommandPalette() {
   const go = useCallback(
     (item: PaletteItem) => {
       if (item.id === CLIP_ITEM_ID) {
-        const m = query.trim().match(/^(剪藏|clip)\s+(.+)$/i);
-        const url = m?.[2]?.trim();
-        if (!url || !/^https?:\/\//i.test(url) || clipBusy) return;
+        const parsed = extractClipUrl(query);
+        if (!parsed || !parsed.valid || clipBusy) return;
         setClipBusy(true);
-        clipUrl(url)
+        clipUrl(parsed.url)
           .then((res) => {
             setOpen(false);
             router.push(`/notes?open=${res.id}`);
           })
           .catch((err) => {
-            alert(`剪藏失败：${(err as Error).message}`);
+            toast.error(`剪藏失败：${(err as Error).message}`);
           })
           .finally(() => setClipBusy(false));
         return;
@@ -205,7 +213,7 @@ export default function CommandPalette() {
         setCaptureBusy(true);
         Promise.resolve(item.action())
           .then(() => setOpen(false))
-          .catch((err) => alert((err as Error).message))
+          .catch((err) => toast.error((err as Error).message))
           .finally(() => setCaptureBusy(false));
         return;
       }
@@ -216,7 +224,7 @@ export default function CommandPalette() {
         router.push('/library');
       }
     },
-    [router, query, clipBusy],
+    [router, query, clipBusy, toast],
   );
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -228,16 +236,27 @@ export default function CommandPalette() {
       setSelected((s) => Math.max(s - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (results[selected]) go(results[selected]);
+      // 结果集缩短时 selected 可能越界（仅 query 变化时归零），钳位后执行
+      const item = results[Math.min(selected, results.length - 1)];
+      if (item) go(item);
     }
   };
+
+  // 复用浮层无障碍行为：焦点陷阱 + 背景滚动锁（Escape 已有全局监听，行为一致）
+  const panelRef = useOverlayA11y(open, () => setOpen(false));
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh]">
+    <div className="fixed inset-0 z-[110] flex items-start justify-center pt-[15vh]">
       <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setOpen(false)} />
-      <div className="relative w-full max-w-xl mx-4 rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="命令面板"
+        className="relative w-full max-w-xl mx-4 rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden outline-none"
+      >
         <div className="flex items-center gap-3 px-4 border-b border-gray-100">
           <SearchIcon className="w-4 h-4 text-gray-400" />
           <input

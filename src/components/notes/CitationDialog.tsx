@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { BookOpen, Loader2, X } from 'lucide-react';
+import { BookOpen, Loader2 } from 'lucide-react';
 import { AnnotationHit, searchAnnotations } from '@/lib/api/client';
+import { Modal as UiModal } from '@/components/ui';
 
 interface CitationDialogProps {
   onClose: () => void;
@@ -17,18 +18,31 @@ export default function CitationDialog({ onClose, onInsert }: CitationDialogProp
   const [hits, setHits] = useState<AnnotationHit[]>([]);
   const [loading, setLoading] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 响应乱序守卫：快速输入时丢弃过期响应，避免旧结果覆盖新结果
+  const seqRef = useRef(0);
 
   // 防抖搜索：输入停顿 300ms 后再请求（打开弹窗时同样走一次防抖）
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        seqRef.current += 1;
+        setHits([]);
+        setLoading(false);
+        return;
+      }
+      const seq = ++seqRef.current;
       setLoading(true);
       try {
-        setHits(await searchAnnotations(query));
+        const result = await searchAnnotations(trimmed);
+        if (seq !== seqRef.current) return;
+        setHits(result);
       } catch {
+        if (seq !== seqRef.current) return;
         setHits([]);
       } finally {
-        setLoading(false);
+        if (seq === seqRef.current) setLoading(false);
       }
     }, 300);
     return () => {
@@ -37,15 +51,15 @@ export default function CitationDialog({ onClose, onInsert }: CitationDialogProp
   }, [query]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] p-4">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative w-full max-w-xl bg-white rounded-xl shadow-2xl flex flex-col max-h-[70vh]">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-          <h3 className="text-sm font-medium text-gray-900">插入书籍标注引用</h3>
-          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded">
-            <X className="w-4 h-4 text-gray-500" />
-          </button>
-        </div>
+    <UiModal
+      open
+      onClose={onClose}
+      ariaLabel="插入书籍标注引用"
+      panelClassName="items-start max-h-[70vh] w-full max-w-xl -translate-y-[8vh]"
+    >
+      <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
+        <h3 className="text-sm font-medium text-gray-900">插入书籍标注引用</h3>
+      </div>
         <div className="px-5 py-3 border-b border-gray-100">
           <input
             type="text"
@@ -103,7 +117,6 @@ export default function CitationDialog({ onClose, onInsert }: CitationDialogProp
         <div className="px-5 py-2.5 border-t border-gray-100 text-xs text-gray-400">
           插入引用后将自动建立笔记与书籍的「引用」连接
         </div>
-      </div>
-    </div>
+    </UiModal>
   );
 }
