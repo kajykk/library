@@ -14,5 +14,17 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.{ts,tsx}'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      reportsDirectory: 'coverage',
+      include: ['src/lib/**', 'src/components/**', 'src/app/**'],
+      exclude: [
+        // 第三方 vendored 代码与测试自身不计入
+        'src/lib/parsers/foliate-js/**',
+        'src/**/__tests__/**',
+        'src/**/*.test.*',
+      ],
+    },
   },
 });
