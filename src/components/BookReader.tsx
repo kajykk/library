@@ -21,6 +21,7 @@ import {
 import { useDialog, useToast } from '@/components/ui';
 import { useReadingProgress } from './reader/hooks/useReadingProgress';
 import { useReaderShortcuts } from './reader/hooks/useReaderShortcuts';
+import { usePdfDocument } from './reader/hooks/usePdfDocument';
 import {
   ChevronLeft,
   ChevronRight,
@@ -74,17 +75,14 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
 
   const contentRef = useRef<HTMLDivElement>(null);
   const txtLinesRef = useRef<string[] | null>(null);
-  const pdfDocRef = useRef<{ getPage: (n: number) => Promise<unknown> } | null>(null);
-  // PDF 生命周期清理：退出阅读器时销毁文档与 loadingTask，释放 pdf.js worker 内存
-  const pdfCleanupRef = useRef<(() => void) | null>(null);
-  // 追踪在途的进度保存已抽离至 useReadingProgress（save/flush）
-  // PDF 页面渲染缓存（dataURL，最多保留 12 页）+ 渲染序号防快速翻页乱序
-  const pdfPageCache = useRef(new Map<number, string>());
-  const pdfRenderSeq = useRef(0);
   const readingStartTimeRef = useRef<number>(Date.now());
   const currentPageRef = useRef<number>(initialPosition);
   const initialPositionRef = useRef<number>(initialPosition);
   const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // PDF 生命周期/页缓存/渲染守卫抽离至 usePdfDocument
+  const { load: loadPdfDocument, renderPage: renderPdfPage, destroy: destroyPdf } =
+    usePdfDocument(setContent);
 
   // 进度保存（在途登记 + 退出前 flush）抽离至 useReadingProgress
   const { save: saveProgress, flush: flushProgress } = useReadingProgress(book.id);
@@ -106,7 +104,6 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   useEffect(() => {
     const bookId = book.id;
     const startPosition = initialPositionRef.current;
-    const pageCache = pdfPageCache.current; // 实例恒定，捕获以供清理使用
     loadContent();
     loadAnnotations();
     readingStartTimeRef.current = Date.now();
@@ -124,10 +121,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
         ).catch((err) => console.error('保存阅读记录失败:', err));
       }
       // 释放 pdf.js 资源与页面缓存（多次进出 PDF 阅读器不再叠加泄漏）
-      pdfCleanupRef.current?.();
-      pdfCleanupRef.current = null;
-      pdfDocRef.current = null;
-      pageCache.clear();
+      destroyPdf();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -203,114 +197,22 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   };
 
   const loadPdfContent = async () => {
+    const arrayBuffer = await getFileArrayBuffer(book.id);
+    if (!arrayBuffer) {
+      setContent('<p>PDF 文件加载失败</p>');
+      return;
+    }
     try {
-      const arrayBuffer = await getFileArrayBuffer(book.id);
-      if (!arrayBuffer) {
-        setContent('<p>PDF 文件加载失败</p>');
-        return;
-      }
+      const numPages = await loadPdfDocument(arrayBuffer);
+      setTotalPages(numPages);
 
-      // pdfjs-dist v4：legacy 构建仅提供 ESM 入口；worker 用 public 下同源 .mjs（v4 以 module worker 加载）
-      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-
-      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-      const pdf = await loadingTask.promise;
-
-      pdfCleanupRef.current = () => {
-        try {
-          pdf.destroy();
-        } catch {
-          /* 已销毁则忽略 */
-        }
-        try {
-          loadingTask.destroy();
-        } catch {
-          /* 已销毁则忽略 */
-        }
-      };
-
-      setTotalPages(pdf.numPages);
-      pdfDocRef.current = pdf;
-
-      const savedPage = Math.min(Math.max(book.lastPosition ?? 1, 1), pdf.numPages);
+      const savedPage = Math.min(Math.max(book.lastPosition ?? 1, 1), numPages);
       setCurrentPage(savedPage);
 
-      await renderPdfPage(pdf, savedPage);
+      await renderPdfPage(savedPage);
     } catch (error) {
       console.error('PDF parsing failed:', error);
       setContent('<p>PDF 解析失败</p>');
-    }
-  };
-
-  const pdfImageHtml = (imageUrl: string) =>
-    `<div style="text-align: center;"><img src="${imageUrl}" style="max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" /></div>`;
-
-  const cachePdfPage = (pageNumber: number, imageUrl: string) => {
-    const cache = pdfPageCache.current;
-    if (cache.has(pageNumber)) return;
-    if (cache.size >= 12) {
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    cache.set(pageNumber, imageUrl);
-  };
-
-  const prefetchPdfPages = (pdf: any, pageNumber: number) => {
-    const targets = [pageNumber + 1, pageNumber - 1, pageNumber + 2, pageNumber - 2]
-      .filter((n) => n >= 1 && n <= pdf.numPages && !pdfPageCache.current.has(n));
-    targets.forEach(async (n) => {
-      try {
-        const page = await pdf.getPage(n);
-        const viewport = page.getViewport({ scale: 1.5 });
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        if (!context) return;
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport }).promise;
-        cachePdfPage(n, canvas.toDataURL('image/png'));
-      } catch {
-        /* 预取失败忽略 */
-      }
-    });
-  };
-
-  const renderPdfPage = async (pdf: any, pageNumber: number) => {
-    const cached = pdfPageCache.current.get(pageNumber);
-    if (cached) {
-      setContent(pdfImageHtml(cached));
-      return;
-    }
-    const seq = ++pdfRenderSeq.current;
-    try {
-      const page = await pdf.getPage(pageNumber);
-      const scale = 1.5;
-      const viewport = page.getViewport({ scale });
-
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      if (!context) return;
-
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
-
-      const imageUrl = canvas.toDataURL('image/png');
-      cachePdfPage(pageNumber, imageUrl);
-      if (seq === pdfRenderSeq.current) {
-        setContent(pdfImageHtml(imageUrl));
-      }
-      prefetchPdfPages(pdf, pageNumber);
-    } catch (error) {
-      if (seq === pdfRenderSeq.current) {
-        console.error('PDF page render failed:', error);
-        setContent('<p>PDF 页面渲染失败</p>');
-      }
     }
   };
 
@@ -337,8 +239,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const chapterIndex = Math.min(target, epubContent.length - 1);
       setCurrentChapter(chapterIndex);
       setContent(epubContent[chapterIndex].content);
-    } else if (book.format === 'pdf' && pdfDocRef.current) {
-      await renderPdfPage(pdfDocRef.current, target);
+    } else if (book.format === 'pdf') {
+      await renderPdfPage(target);
     } else if (book.format === 'txt') {
       renderTxtPage(target);
     }
