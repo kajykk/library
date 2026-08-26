@@ -21,7 +21,6 @@ import {
   Wifi,
   WifiOff,
   Users,
-  Link2,
   Sparkles,
 } from 'lucide-react';
 import * as Y from 'yjs';
@@ -43,17 +42,8 @@ import { useToast } from '@/components/ui';
 import { WikiLinkExtension } from './editor/wikiLink';
 import SlashMenu, { SLASH_ITEMS } from './editor/menus/SlashMenu';
 import MentionMenu from './editor/menus/MentionMenu';
-
-function highlightSnippet(snippet: string) {
-  const parts = snippet.split(/<\/?mark>/);
-  return parts.map((part, i) =>
-    i % 2 === 1 ? (
-      <mark key={i} className="bg-yellow-100 rounded px-0.5">{part}</mark>
-    ) : (
-      <span key={i}>{part}</span>
-    ),
-  );
-}
+import EditorToolbar from './editor/Toolbar';
+import RelationPanels from './editor/panels/RelationPanels';
 
 export interface NoteEditorProps {
   note: ApiDocument;
@@ -516,9 +506,6 @@ function NoteEditorView({
     [editor],
   );
 
-  const btn = (active: boolean) =>
-    `p-1.5 rounded transition-colors ${active ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:bg-gray-100'}`;
-
   // 返回列表前先等在途/待触发的保存落地：父级刷新列表时能读到最新内容
   const handleBack = useCallback(async () => {
     try {
@@ -644,31 +631,7 @@ function NoteEditorView({
         />
       </div>
 
-      {editor && (
-        <div className="flex items-center gap-1 border-b border-gray-200 pb-2 mb-4 flex-wrap">
-          <button onClick={() => editor.chain().focus().toggleBold().run()} className={btn(editor.isActive('bold'))} title="加粗">
-            <Bold className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleItalic().run()} className={btn(editor.isActive('italic'))} title="斜体">
-            <Italic className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} className={btn(editor.isActive('heading', { level: 2 }))} title="标题">
-            <Heading2 className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleBulletList().run()} className={btn(editor.isActive('bulletList'))} title="无序列表">
-            <List className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleOrderedList().run()} className={btn(editor.isActive('orderedList'))} title="有序列表">
-            <ListOrdered className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleCodeBlock().run()} className={btn(editor.isActive('codeBlock'))} title="代码块">
-            <Code className="w-4 h-4" />
-          </button>
-          <button onClick={() => editor.chain().focus().toggleBlockquote().run()} className={btn(editor.isActive('blockquote'))} title="引用">
-            <Quote className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      {editor && <EditorToolbar editor={editor} />}
 
       <div ref={editorContainerRef} className="relative bg-white rounded-lg border border-gray-200 p-6">
         <EditorContent editor={editor} />
@@ -689,98 +652,14 @@ function NoteEditorView({
         )}
       </div>
 
-      {/* 反向链接 */}
-      <div className="mt-6">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">
-          反向链接（{backlinks.length}）
-        </h3>
-        {backlinks.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无其他文档引用本笔记</p>
-        ) : (
-          <div className="space-y-1">
-            {backlinks.map((b) => (
-              <button
-                key={b.id}
-                onClick={() => onOpenNote(b.id)}
-                className="block w-full text-left rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors group"
-                title="打开引用笔记"
-              >
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                  <span className="text-gray-700 group-hover:text-primary-600">{b.title}</span>
-                  <span className="text-xs text-gray-400">{b.type === 'note' ? '笔记' : b.type}</span>
-                </div>
-                {b.snippet && (
-                  <p className="text-xs text-gray-400 mt-1 line-clamp-2 pl-4">{highlightSnippet(b.snippet)}</p>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 未链接提及 */}
-      {suggestedLinks.length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">智能建议链接</h3>
-          <p className="text-xs text-gray-400 mb-2">基于标题相似度与文档关系给出可进一步连接的候选项</p>
-          <div className="space-y-1">
-            {suggestedLinks.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => onOpenNote(s.id)}
-                className="block w-full text-left rounded-lg border border-gray-200 px-3 py-2 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-800 truncate">{s.title}</span>
-                  <span className="text-xs text-gray-400">{Math.round(s.score * 100)}%</span>
-                </div>
-                <p className="text-xs text-gray-400 mt-0.5">{s.type}</p>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {unlinked.length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">
-            未链接提及（{unlinked.length}）
-          </h3>
-          <p className="text-xs text-gray-400 mb-2">
-            以下文档提到了「{note.title}」但尚未建立链接
-          </p>
-          <div className="space-y-1">
-            {unlinked.map((u) => (
-              <div
-                key={u.id}
-                className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-                    <button
-                      onClick={() => onOpenNote(u.id)}
-                      className="text-gray-700 hover:text-primary-600 text-left truncate"
-                    >
-                      {u.title}
-                    </button>
-                    <span className="text-xs text-gray-400 shrink-0">{u.type === 'note' ? '笔记' : u.type}</span>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1 line-clamp-2 pl-4">{highlightSnippet(u.snippet)}</p>
-                </div>
-                <button
-                  onClick={() => handleLinkUnlinked(u.id)}
-                  className="shrink-0 flex items-center gap-1 px-2.5 py-1 text-xs text-primary-600 border border-primary-200 rounded-md hover:bg-primary-50 transition-colors"
-                >
-                  <Link2 className="w-3 h-3" />
-                  建立链接
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <RelationPanels
+        noteTitle={note.title}
+        backlinks={backlinks}
+        suggestedLinks={suggestedLinks}
+        unlinked={unlinked}
+        onOpenNote={onOpenNote}
+        onLinkUnlinked={(id) => void handleLinkUnlinked(id)}
+      />
 
       {/* [[双链]] 悬浮预览卡片 */}
       {wikilinkPreview && (
