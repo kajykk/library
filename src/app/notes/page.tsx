@@ -474,6 +474,7 @@ function NotesPageInner() {
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const note = visibleNotes[virtualRow.index];
+                if (!note) return null; // 虚拟索引与列表长度竞态时跳过
               return (
                 <div
                   key={note.id}

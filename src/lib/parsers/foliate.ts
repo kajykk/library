@@ -41,10 +41,11 @@ export function detectImageMime(bytes: Uint8Array): string {
 }
 
 export function resolveZipEntry(file: ZipFileFn, baseDir: string, href: string): ZipEntry | null {
-  const clean = href.split('#')[0].split('?')[0];
-  const candidates = [clean];
-  if (clean.startsWith('/')) candidates.push(clean.slice(1));
-  else candidates.push(baseDir + clean);
+  const clean = href.split('#')[0] ?? href;
+  const cleaned = clean.split('?')[0] ?? clean;
+  const candidates = [cleaned];
+  if (cleaned.startsWith('/')) candidates.push(cleaned.slice(1));
+  else candidates.push(baseDir + cleaned);
   for (const path of candidates) {
     const entry = file(path);
     if (entry) return entry;
@@ -65,6 +66,7 @@ async function inlineChapterResources(html: string, baseDir: string, file: ZipFi
   for (const match of [...processed.matchAll(imageRegex)]) {
     const attr = match[1];
     const originalPath = match[2];
+    if (!attr || !originalPath) continue;
     if (/^(https?:|data:|blob:)/i.test(originalPath)) continue;
 
     const resourceFile = resolveZipEntry(file, baseDir, originalPath);
@@ -88,6 +90,7 @@ async function inlineChapterResources(html: string, baseDir: string, file: ZipFi
   for (const match of [...processed.matchAll(cssRegex)]) {
     const originalPath = match[1];
     const fullMatch = match[0];
+    if (!originalPath) continue;
     if (/^(https?:|data:|blob:)/i.test(originalPath)) continue;
 
     const resourceFile = resolveZipEntry(file, baseDir, originalPath);
@@ -218,9 +221,12 @@ export async function parseMobiChapters(arrayBuffer: ArrayBuffer): Promise<Parse
   walk(book.toc);
 
   const chapters: ParsedChapter[] = [];
-  for (let i = 0; i < book.sections.length; i += 1) {
+  const sections = book.sections ?? [];
+  for (let i = 0; i < sections.length; i += 1) {
     try {
-      const doc = await book.sections[i].createDocument();
+      const section = sections[i];
+      if (!section) continue;
+      const doc = await section.createDocument();
       await inlineMobiResources(doc, book);
       const root = doc.body ?? doc.documentElement;
       const html = root ? root.innerHTML : '';

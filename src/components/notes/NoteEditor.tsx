@@ -302,14 +302,15 @@ function NoteEditorView({
       const pos = state.selection.from;
       const textBefore = state.doc.textBetween(Math.max(0, pos - 40), pos, '\n', '\0');
       const m = textBefore.match(/\[\[([^\[\]\n]*)$/);
-      if (!m) {
+      const query = m?.[1];
+      if (!m || query === undefined) {
         setMention(null);
         return;
       }
       let top = 80;
       let left = 24;
       try {
-        const coords = view.coordsAtPos(pos - m[1].length);
+        const coords = view.coordsAtPos(pos - query.length);
         const container = editorContainerRef.current?.getBoundingClientRect();
         if (container) {
           top = coords.top - container.top;
@@ -318,7 +319,7 @@ function NoteEditorView({
       } catch {
         /* 回退默认位置 */
       }
-      setMention({ query: m[1], top, left });
+      setMention({ query, top, left });
     };
     editor.on('update', checkMention);
     return () => {
@@ -338,14 +339,15 @@ function NoteEditorView({
       }
       const textBefore = state.doc.textBetween(Math.max(0, pos - 30), pos, '\n', '\0');
       const m = textBefore.match(/(?:^|\s)\/([^\s/]*)$/);
-      if (!m || m[1].length > 20) {
+      const slashQuery = m?.[1];
+      if (!m || slashQuery === undefined || slashQuery.length > 20) {
         setSlash(null);
         return;
       }
       let top = 80;
       let left = 24;
       try {
-        const coords = view.coordsAtPos(pos - m[1].length - 1);
+        const coords = view.coordsAtPos(pos - slashQuery.length - 1);
         const container = editorContainerRef.current?.getBoundingClientRect();
         if (container) {
           top = coords.top - container.top;
@@ -355,9 +357,9 @@ function NoteEditorView({
         /* 回退默认位置 */
       }
       setSlash((prev) =>
-        prev && prev.query === m[1] && prev.top === top && prev.left === left
+        prev && prev.query === slashQuery && prev.top === top && prev.left === left
           ? prev
-          : { query: m[1], top, left, index: 0 },
+          : { query: slashQuery, top, left, index: 0 },
       );
     };
     editor.on('update', checkSlash);

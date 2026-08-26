@@ -48,7 +48,9 @@ describe('Modal', () => {
       }),
     );
     const buttons = screen.getAllByRole('button');
-    buttons[buttons.length - 1].focus();
+    const lastButton = buttons[buttons.length - 1];
+    if (!lastButton) throw new Error('应存在两个按钮');
+    lastButton.focus();
     fireEvent.keyDown(document, { key: 'Tab' });
     // 从最后一个 Tab 应回到第一个
     expect(document.activeElement).toBe(buttons[0]);

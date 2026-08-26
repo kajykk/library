@@ -98,8 +98,8 @@ export async function extractMetadataFromFile(file: File): Promise<{
       const containerXml = await zip.file('META-INF/container.xml')?.async('text');
       if (containerXml) {
         const opfPathMatch = containerXml.match(/full-path="([^"]+)"/);
-        if (opfPathMatch) {
-          const opfPath = opfPathMatch[1];
+        const opfPath = opfPathMatch?.[1];
+        if (opfPath) {
           const opfContent = await zip.file(opfPath)?.async('text');
           if (opfContent) {
             const parser = new DOMParser();

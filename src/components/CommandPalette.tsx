@@ -36,8 +36,8 @@ const QUICK_NOTE_ITEM_ID = '__quick_note__';
 /** 解析 "剪藏 <URL>"（或 clip <URL>）输入：返回 URL 与有效性，供列表项与执行逻辑共用（避免双份正则漂移） */
 function extractClipUrl(query: string): { url: string; valid: boolean } | null {
   const m = query.trim().match(/^(剪藏|clip)\s+(.+)$/i);
-  if (!m) return null;
-  const url = m[2].trim();
+  const url = m?.[2]?.trim();
+  if (!url) return null;
   return { url, valid: /^https?:\/\//i.test(url) };
 }
 

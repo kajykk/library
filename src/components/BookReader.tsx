@@ -186,7 +186,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
         const initialIndex = Math.min(Math.max(book.lastPosition ?? 0, 0), chapters.length - 1);
         setCurrentChapter(initialIndex);
         setCurrentPage(initialIndex);
-        setContent(chapters[initialIndex].content);
+        setContent(chapters[initialIndex]?.content ?? '');
       } else {
         setContent(`<p>${formatLabel} 中未解析到可阅读章节</p>`);
       }
@@ -238,7 +238,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     if (isChapteredFormat(book.format) && epubContent.length > 0) {
       const chapterIndex = Math.min(target, epubContent.length - 1);
       setCurrentChapter(chapterIndex);
-      setContent(epubContent[chapterIndex].content);
+      setContent(epubContent[chapterIndex]?.content ?? '');
     } else if (book.format === 'pdf') {
       await renderPdfPage(target);
     } else if (book.format === 'txt') {
@@ -428,13 +428,14 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       const results: Array<{ chapter: number; title: string; before: string; match: string; after: string }> = [];
       for (let i = 0; i < epubContent.length && results.length < 50; i++) {
         const text = texts[i];
+        if (!text) continue;
         const lowerText = text.toLowerCase();
         let idx = lowerText.indexOf(lowerQuery);
         // 每章报告全部命中（此前只报第一个）
         while (idx >= 0 && results.length < 50) {
           results.push({
             chapter: i,
-            title: epubContent[i].title,
+            title: epubContent[i]?.title ?? '',
             before: text.slice(Math.max(0, idx - 30), idx),
             match: text.slice(idx, idx + query.length),
             after: text.slice(idx + query.length, idx + query.length + 40),

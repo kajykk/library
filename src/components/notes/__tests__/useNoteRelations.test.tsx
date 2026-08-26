@@ -86,12 +86,14 @@ describe('useNoteRelations', () => {
     const { result } = renderHook(() => useNoteRelations('self', 'React 入门'));
 
     await waitFor(() => expect(result.current.suggestedLinks.length).toBe(5));
-    expect(result.current.suggestedLinks.map((l) => l.id)).toEqual(['d1', 'd2', 'd3', 'd4', 'd5']);
-    expect(result.current.suggestedLinks[0].score).toBe(0.9);
-    expect(result.current.suggestedLinks[1].score).toBe(0.9);
-    expect(result.current.suggestedLinks.slice(2).every((l) => l.score === 0.4)).toBe(true);
-    expect(result.current.suggestedLinks.every((l) => l.id !== 'self')).toBe(true);
-    expect(result.current.suggestedLinks[1].type).toBe('book');
+    const links = result.current.suggestedLinks;
+    if (links.length < 2) throw new Error('建议链接应不少于 2 条');
+    expect(links.map((l) => l.id)).toEqual(['d1', 'd2', 'd3', 'd4', 'd5']);
+    expect(links[0]?.score).toBe(0.9);
+    expect(links[1]?.score).toBe(0.9);
+    expect(links.slice(2).every((l) => l.score === 0.4)).toBe(true);
+    expect(links.every((l) => l.id !== 'self')).toBe(true);
+    expect(links[1]?.type).toBe('book');
   });
 
   it('useMemo 缓存：无关重渲染不重算派生值（引用稳定），noteTitle 变化只重算 suggestedLinks', async () => {

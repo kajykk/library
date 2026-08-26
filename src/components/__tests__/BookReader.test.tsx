@@ -81,7 +81,9 @@ describe('BookReader（TXT 特征基线）', () => {
     await waitFor(() => {
       expect(mockedSaveProgress).toHaveBeenCalledTimes(1);
     });
-    const [bookId, progress, position] = mockedSaveProgress.mock.calls[0];
+    const call = mockedSaveProgress.mock.calls[0];
+    if (!call) throw new Error('saveReadingProgress 应至少被调用一次');
+    const [bookId, progress, position] = call;
     expect(bookId).toBe('b1');
     expect(position).toBe(1); // 第二页索引为 1
     expect(progress).toBeGreaterThan(0);

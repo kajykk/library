@@ -46,8 +46,9 @@ export function useOverlayA11y(open: boolean, onClose: () => void) {
         container?.focus();
         return;
       }
-      const firstEl = nodes[0];
-      const lastEl = nodes[nodes.length - 1];
+      // length>0 分支已保证首尾元素存在
+      const firstEl = nodes[0] as HTMLElement;
+      const lastEl = nodes[nodes.length - 1] as HTMLElement;
       const active = document.activeElement;
       if (e.shiftKey && (active === firstEl || !(container && container.contains(active)))) {
         e.preventDefault();

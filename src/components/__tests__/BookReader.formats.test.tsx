@@ -111,7 +111,9 @@ describe('BookReader（PDF 特征基线）', () => {
 
     await waitFor(() => expect(pdfjs.getPage).toHaveBeenCalledWith(3));
     await waitFor(() => expect(mockedSaveProgress).toHaveBeenCalledTimes(1));
-    const [bookId, progress, position] = mockedSaveProgress.mock.calls[0];
+    const call = mockedSaveProgress.mock.calls[0];
+    if (!call) throw new Error('saveReadingProgress 应至少被调用一次');
+    const [bookId, progress, position] = call;
     expect(bookId).toBe('b1');
     expect(position).toBe(3);
     expect(progress).toBe(100);
@@ -141,7 +143,9 @@ describe('BookReader（EPUB 特征基线）', () => {
 
     await waitFor(() => expect(screen.getByText(/第二章内容/)).toBeInTheDocument());
     await waitFor(() => expect(mockedSaveProgress).toHaveBeenCalledTimes(1));
-    const [, progress, position] = mockedSaveProgress.mock.calls[0];
+    const call = mockedSaveProgress.mock.calls[0];
+    if (!call) throw new Error('saveReadingProgress 应至少被调用一次');
+    const [, progress, position] = call;
     expect(position).toBe(1);
     expect(progress).toBe(100); // 第 2 章 / 共 2 章
   });

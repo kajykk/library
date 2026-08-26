@@ -137,7 +137,9 @@ function StatisticsPanel({ onClose }: StatisticsPanelProps) {
   // 前置填充使第一列从周一开始，与「一/三/五/日」标签对齐（此前大概率错位 1~6 格）
   const heatmapColumns = useMemo(() => {
     if (!heatmapDays || heatmapDays.length === 0) return [] as Array<{ date: string; minutes: number } | null>[];
-    const firstDow = (new Date(`${heatmapDays[0].date}T00:00:00`).getDay() + 6) % 7; // 周一=0
+    const firstDay = heatmapDays[0];
+    if (!firstDay) return [] as Array<{ date: string; minutes: number } | null>[];
+    const firstDow = (new Date(`${firstDay.date}T00:00:00`).getDay() + 6) % 7; // 周一=0
     const padded: Array<{ date: string; minutes: number } | null> = [
       ...Array.from({ length: firstDow }, () => null),
       ...heatmapDays,

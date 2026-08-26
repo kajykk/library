@@ -209,7 +209,8 @@ function LibraryPageInner() {
         (file) => {
           const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
           const parts = rel.split('/');
-          return parts.length >= 2 ? parts[parts.length - 2] : selectedCategory || '未分类';
+          const parentDir = parts.length >= 2 ? (parts[parts.length - 2] ?? '') : '';
+          return parentDir || selectedCategory || '未分类';
         },
       );
     } finally {

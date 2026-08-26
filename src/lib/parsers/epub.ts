@@ -54,6 +54,7 @@ export async function processEpubResources(
   for (const match of [...processedContent.matchAll(imageRegex)]) {
     const attr = match[1];
     const originalPath = match[2];
+    if (!attr || !originalPath) continue;
 
     if (originalPath.startsWith('http://') || originalPath.startsWith('https://') || originalPath.startsWith('data:')) {
       continue;
@@ -86,7 +87,9 @@ export async function processEpubResources(
     let result = cssContent;
     const urlRegex = /url\(\s*(['"]?)([^'")]+?)\1\s*\)/gi;
     for (const match of [...cssContent.matchAll(urlRegex)]) {
-      const target = match[2].trim();
+      const rawTarget = match[2];
+      if (!rawTarget) continue;
+      const target = rawTarget.trim();
       if (
         !target ||
         target.startsWith('data:') ||
@@ -116,6 +119,7 @@ export async function processEpubResources(
   for (const match of [...processedContent.matchAll(cssRegex)]) {
     const originalPath = match[1];
     const fullMatch = match[0];
+    if (!originalPath) continue;
 
     if (originalPath.startsWith('http://') || originalPath.startsWith('https://') || originalPath.startsWith('data:')) {
       continue;
