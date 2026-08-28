@@ -37,6 +37,19 @@ server/data/
 server/e2e-*/
 .venv/
 
+# 一次性分类/修复脚本
+server/apply_remaining.py
+server/ocr_remaining.py
+server/probe_book_remaining.py
+server/reclassify_fulltext.py
+server/reclassify_ocr.py
+server/restore_ts.py
+
+# 调试/探查数据
+server/probe-data/
+console/
+docs/
+
 # playwright
 node_modules/.cache/
 test-results/

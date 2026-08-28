@@ -71,10 +71,16 @@ def extract_text_sample(fmt: str, path: Path, max_chars: int = MAX_SAMPLE) -> st
         elif fmt == "txt":
             push(path.read_text("utf-8", "ignore"))
         elif fmt == "mobi":
-            raw = path.read_bytes()
-            # MOBI 正文从第 2 条记录起，多为压缩 HTML；尝试直接读可见文本
-            txt = _TAG_RE.sub(" ", raw.decode("latin-1", "ignore"))
-            push(txt)
+            # 优先用 mobi 库解包（Huffman/PalmDOC 压缩），失败退回 latin-1 直读
+            try:
+                from app.services.content_extract import _extract_mobi
+                t = _extract_mobi(path)
+                if t:
+                    push(t)
+            except Exception:
+                raw = path.read_bytes()
+                txt = _TAG_RE.sub(" ", raw.decode("latin-1", "ignore"))
+                push(txt)
     except Exception:
         return ""
 
@@ -82,22 +88,9 @@ def extract_text_sample(fmt: str, path: Path, max_chars: int = MAX_SAMPLE) -> st
 
 
 def score_classify(title: str, author: str, sample: str) -> str | None:
-    """词频打分：正文样本中命中关键词越多、关键词越长越可信；低于阈值不归类"""
-    from app.services.auto_classify import RULES
-
-    text = f"{title} {author} {sample}".lower()
-    best, best_score = None, 0
-    for target, keywords in RULES:
-        score = 0
-        for kw in keywords:
-            if len(kw) < 2:
-                continue
-            n = text.count(kw)
-            if n:
-                score += n * (len(kw) * 2 if len(kw) >= 3 else 1)
-        if score > best_score:
-            best, best_score = target, score
-    return best if best_score >= SCORE_THRESHOLD else None
+    """词频打分：正文样本中命中关键词越多、关键词越长越可信；需阈值+领先度，低于不归类"""
+    from app.services.auto_classify import classify_by_content
+    return classify_by_content(title, author, sample)
 
 
 def main():

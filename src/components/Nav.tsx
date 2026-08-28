@@ -12,16 +12,32 @@ const LINKS = [
   { href: '/settings', label: '设置', icon: Settings },
 ];
 
+const KB_SIGNAL = [
+  '本地优先',
+  '双链整理',
+  '全文检索',
+  '实时协作',
+];
+
 export default function Nav() {
   const pathname = usePathname();
 
   return (
     <nav className="bg-slate-900 text-slate-300">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center h-10">
-        <Link href="/library" className="font-semibold text-white mr-6 text-sm">
-          个人知识库
-        </Link>
-        <div className="flex items-center gap-1">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-10 gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <Link href="/library" className="font-semibold text-white text-sm whitespace-nowrap">
+            个人知识库
+          </Link>
+          <div className="hidden md:flex items-center gap-1 text-[11px] text-slate-400">
+            {KB_SIGNAL.map((item) => (
+              <span key={item} className="px-2 py-0.5 rounded-full bg-slate-800/80 border border-slate-700">
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
           {LINKS.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || pathname.startsWith(href + '/');
             return (
