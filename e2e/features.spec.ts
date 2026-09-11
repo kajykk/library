@@ -176,4 +176,62 @@ test.describe('功能扩展冒烟', () => {
     const filePath = await download.path();
     expect(filePath).toBeTruthy();
   });
+
+  test('标注转笔记与每日回顾', async ({ page, request }) => {
+    await configureBackend(page);
+    await cleanupBooks(request, 'E2E 测试书');
+    await page.goto('/library');
+    await page.locator('input[type="file"]').first().setInputFiles(
+      path.join(__dirname, 'fixtures', 'sample.epub'),
+    );
+    await expect(page.getByText('成功 1 个')).toBeVisible({ timeout: 30_000 });
+
+    // 正文选择交由人工；流转链路（侧栏动作 → 笔记 → 回顾页）用 API 造数
+    const docs = await (
+      await request.get(`${API_BASE}/api/documents`, { headers: { 'X-API-Token': TOKEN } })
+    ).json();
+    const book = docs.find((d: { title: string }) => d.title === 'E2E 测试书');
+    expect(book).toBeTruthy();
+    const annResp = await request.post(`${API_BASE}/api/annotations`, {
+      headers: { 'X-API-Token': TOKEN },
+      data: {
+        document_id: book.id,
+        type: 'highlight',
+        anchor: { chapter: 0, page: 0 },
+        quote: '电磁脉冲 e2e搜索关键词',
+        content: 'e2e批注内容',
+        color: 'yellow',
+      },
+    });
+    expect(annResp.ok()).toBeTruthy();
+    const ann = (await annResp.json()) as { id: string };
+
+    // 阅读器侧栏：划线可见 → 转为笔记 → 出现"查看笔记"
+    await page.goto(`/reader/${book.id}`);
+    await expect(page.getByRole('heading', { name: '第一章 开端' })).toBeVisible({ timeout: 30_000 });
+    await page.getByTitle('批注与笔记').click();
+    // exact：正文与侧栏都含该文字，精确匹配只落在侧栏标注卡片
+    await expect(page.getByText('电磁脉冲 e2e搜索关键词', { exact: true })).toBeVisible({ timeout: 10_000 });
+    await page.getByTitle('生成一条带原文引用和书名双链的笔记').click();
+    await expect(page.getByText(/已转为笔记/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('查看笔记')).toBeVisible();
+
+    // 每日回顾页：展示该划线、书名与批注
+    await page.goto('/review');
+    await expect(page.getByText('电磁脉冲 e2e搜索关键词')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/E2E 测试书/)).toBeVisible();
+    await expect(page.getByText('e2e批注内容')).toBeVisible();
+
+    // 后端侧：转出的笔记确已入库，且元数据回指源标注与源书
+    const notes = await (
+      await request.get(`${API_BASE}/api/documents?type=note`, {
+        headers: { 'X-API-Token': TOKEN },
+      })
+    ).json();
+    const note = (notes as Array<{ meta: { annotation_id?: string; source_document_id?: string } }>).find(
+      (n) => n.meta?.annotation_id === ann.id,
+    );
+    expect(note).toBeTruthy();
+    expect(note?.meta?.source_document_id).toBe(book.id);
+  });
 });

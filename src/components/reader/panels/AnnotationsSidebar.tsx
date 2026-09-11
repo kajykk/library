@@ -5,7 +5,8 @@
  * 通过 props 交互。从 BookReader 抽离以缩小主编排文件。
  */
 
-import { Bookmark as BookmarkIcon, Plus, Trash2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Bookmark as BookmarkIcon, FilePlus2, Plus, Trash2 } from 'lucide-react';
 import type { UnifiedAnnotation } from '@/lib/dataSource';
 
 export type SidebarTab = 'bookmarks' | 'annotations';
@@ -24,6 +25,10 @@ interface AnnotationsSidebarProps {
   onDelete: (annotation: UnifiedAnnotation) => void;
   /** 当前格式是否支持划线（用于空态提示文案） */
   highlightSupported: boolean;
+  /** 标注一键转笔记（API 模式才可用） */
+  onToNote?: (annotation: UnifiedAnnotation) => void;
+  /** 已转换映射：annotationId -> 新笔记 id（会话内） */
+  convertedNotes?: Record<string, string>;
 }
 
 export default function AnnotationsSidebar({
@@ -38,7 +43,10 @@ export default function AnnotationsSidebar({
   onJump,
   onDelete,
   highlightSupported,
+  onToNote,
+  convertedNotes = {},
 }: AnnotationsSidebarProps) {
+  const router = useRouter();
   const bookmarks = annotations.filter((a) => a.type === 'bookmark');
   const notes = annotations.filter((a) => a.type !== 'bookmark');
 
@@ -143,43 +151,64 @@ export default function AnnotationsSidebar({
                 {highlightSupported ? '，选中正文即可划线' : ''}
               </p>
             ) : (
-              notes.map((ann) => (
-                <div key={ann.id} className="bg-white p-3 rounded-lg border border-gray-200 group">
-                  {ann.type === 'highlight' ? (
-                    <p className="text-sm text-gray-500 border-l-4 border-yellow-300 pl-2 italic">
-                      {ann.quote}
-                    </p>
-                  ) : null}
-                  {ann.content ? (
-                    <p
-                      className={`text-sm text-gray-700 ${ann.type === 'highlight' ? 'mt-1' : ''}`}
-                    >
-                      {ann.content}
-                    </p>
-                  ) : null}
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-xs text-gray-400">
-                      {ann.type === 'highlight' ? '划线' : `第 ${ann.page} 页`} ·{' '}
-                      {new Date(ann.createdAt).toLocaleDateString('zh-CN')}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => onJump(ann.chapter)}
-                        className="text-xs text-primary-600 hover:underline opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all"
+              notes.map((ann) => {
+                const convertedNoteId = convertedNotes[ann.id];
+                return (
+                  <div key={ann.id} className="bg-white p-3 rounded-lg border border-gray-200 group">
+                    {ann.type === 'highlight' ? (
+                      <p className="text-sm text-gray-500 border-l-4 border-yellow-300 pl-2 italic">
+                        {ann.quote}
+                      </p>
+                    ) : null}
+                    {ann.content ? (
+                      <p
+                        className={`text-sm text-gray-700 ${ann.type === 'highlight' ? 'mt-1' : ''}`}
                       >
-                        跳转
-                      </button>
-                      <button
-                        onClick={() => onDelete(ann)}
-                        className="p-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-red-50 rounded transition-all"
-                        aria-label="删除批注"
-                      >
-                        <Trash2 className="w-3 h-3 text-red-500" />
-                      </button>
+                        {ann.content}
+                      </p>
+                    ) : null}
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-xs text-gray-400">
+                        {ann.type === 'highlight' ? '划线' : `第 ${ann.page} 页`} ·{' '}
+                        {new Date(ann.createdAt).toLocaleDateString('zh-CN')}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => onJump(ann.chapter)}
+                          className="text-xs text-primary-600 hover:underline opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all"
+                        >
+                          跳转
+                        </button>
+                        {onToNote && convertedNoteId ? (
+                          <button
+                            onClick={() => router.push(`/notes?open=${convertedNoteId}`)}
+                            className="text-xs text-emerald-600 hover:underline"
+                            title="打开由该标注生成的笔记"
+                          >
+                            查看笔记
+                          </button>
+                        ) : onToNote ? (
+                          <button
+                            onClick={() => onToNote(ann)}
+                            className="flex items-center gap-1 text-xs text-primary-600 hover:underline opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all"
+                            title="生成一条带原文引用和书名双链的笔记"
+                          >
+                            <FilePlus2 className="w-3 h-3" />
+                            转为笔记
+                          </button>
+                        ) : null}
+                        <button
+                          onClick={() => onDelete(ann)}
+                          className="p-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-red-50 rounded transition-all"
+                          aria-label="删除批注"
+                        >
+                          <Trash2 className="w-3 h-3 text-red-500" />
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         )}

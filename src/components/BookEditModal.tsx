@@ -3,7 +3,10 @@
 import { useState } from 'react';
 import { Book, Category } from '@/lib/db';
 import { saveBookEdit } from '@/lib/dataSource';
+import { useDataSourceMode } from '@/lib/useDataSourceMode';
+import { MetadataCandidate, applyMetadata, searchMetadataOnline } from '@/lib/api/client';
 import { Modal as UiModal, useToast } from '@/components/ui';
+import { Globe, Loader2 } from 'lucide-react';
 
 interface BookEditModalProps {
   book: Book;
@@ -12,17 +15,135 @@ interface BookEditModalProps {
   onSave: () => void;
 }
 
+const SOURCE_LABELS: Record<string, string> = {
+  google_books: 'Google Books',
+  open_library: 'Open Library',
+};
+
+/** 联网搜索元数据区块：Google Books / Open Library 候选一键填入（需后端） */
+function MetaSearchSection({
+  book,
+  onApply,
+}: {
+  book: Book;
+  onApply: (candidate: MetadataCandidate) => void;
+}) {
+  const toast = useToast();
+  const [query, setQuery] = useState(
+    [book.title, book.author === '未知作者' ? '' : book.author].filter(Boolean).join(' '),
+  );
+  const [searching, setSearching] = useState(false);
+  const [candidates, setCandidates] = useState<MetadataCandidate[] | null>(null);
+
+  const handleSearch = async () => {
+    const q = query.trim();
+    if (!q || searching) return;
+    setSearching(true);
+    try {
+      const results = await searchMetadataOnline(q);
+      setCandidates(results);
+      if (results.length === 0) toast.info('没有找到匹配的在线元数据');
+    } catch (err) {
+      toast.error('联网搜索失败：' + (err as Error).message);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-primary-100 bg-primary-50/40 p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Globe className="w-4 h-4 text-primary-600" />
+        <span className="text-sm font-medium text-gray-700">联网搜索元数据</span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void handleSearch();
+            }
+          }}
+          placeholder="书名 / 书名 + 作者 / ISBN"
+          className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+        />
+        <button
+          type="button"
+          onClick={() => void handleSearch()}
+          disabled={searching || !query.trim()}
+          className="flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-primary-700 disabled:opacity-60"
+        >
+          {searching && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+          搜索
+        </button>
+      </div>
+      {candidates && candidates.length > 0 && (
+        <div className="mt-3 space-y-2 max-h-56 overflow-y-auto">
+          {candidates.map((c, i) => (
+            <button
+              key={`${c.source}-${i}`}
+              type="button"
+              onClick={() => onApply(c)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-primary-300 hover:bg-primary-50"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">
+                  {SOURCE_LABELS[c.source] ?? c.source}
+                </span>
+                <span className="text-sm font-medium text-gray-800 truncate">{c.title}</span>
+                {c.year && <span className="text-xs text-gray-400 shrink-0">{c.year}</span>}
+              </div>
+              <p className="text-xs text-gray-500 mt-0.5 truncate">
+                {[c.author, c.publisher].filter(Boolean).join(' · ') || '（无作者/出版社信息）'}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BookEditModal({ book, categories, onClose, onSave }: BookEditModalProps) {
   const [formData, setFormData] = useState<Book>({ ...book });
   const [newTag, setNewTag] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pendingCover, setPendingCover] = useState<string | null>(null);
+  const [appliedSource, setAppliedSource] = useState<string | null>(null);
   const toast = useToast();
+  const { mode } = useDataSourceMode();
+
+  const handleApplyCandidate = (candidate: MetadataCandidate) => {
+    setFormData((prev) => ({
+      ...prev,
+      title: candidate.title || prev.title,
+      author: candidate.author || prev.author,
+      publisher: candidate.publisher || prev.publisher,
+      isbn: candidate.isbn || prev.isbn,
+      language: candidate.language || prev.language,
+      description: candidate.description || prev.description,
+    }));
+    setPendingCover(candidate.cover_url ?? null);
+    setAppliedSource(SOURCE_LABELS[candidate.source] ?? candidate.source);
+    toast.success('已填入候选元数据，保存时生效');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return; // 防双击重复提交
     setSaving(true);
     try {
+      // 选中的候选带封面 URL：先经后端下载落盘（API 模式）
+      if (pendingCover && mode === 'api') {
+        try {
+          await applyMetadata(book.id, { cover_url: pendingCover });
+        } catch (err) {
+          toast.error('封面下载失败：' + (err as Error).message);
+        }
+      }
       await saveBookEdit(formData);
       onSave();
       onClose();
@@ -58,6 +179,13 @@ export default function BookEditModal({ book, categories, onClose, onSave }: Boo
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 p-6">
+          {mode === 'api' && (
+            <MetaSearchSection book={book} onApply={handleApplyCandidate} />
+          )}
+          {appliedSource && (
+            <p className="text-xs text-emerald-600 -mt-2">已应用 {appliedSource} 候选，封面将在保存时下载</p>
+          )}
+
           <div>
             <label htmlFor="book-edit-title" className="block text-sm font-medium text-gray-700 mb-1">书名</label>
             <input

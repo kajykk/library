@@ -5,3 +5,14 @@ repos:
     rev: v8.18.4
     hooks:
       - id: gitleaks
+
+# Next.js ESLint：linter（项目用 .eslintrc.json legacy config，eslint 8）
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint (Next.js)
+        entry: npx eslint src --ext .ts,.tsx
+        language: system
+        files: ^src/.*\.tsx?$
+        pass_filenames: false
+        types: [file]

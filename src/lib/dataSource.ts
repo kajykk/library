@@ -35,6 +35,7 @@ import {
   ApiAnnotation,
   ApiCollection,
   ApiDocument,
+  annotationToNote,
   checkHealth,
   createAnnotationApi,
   createCollection,
@@ -631,4 +632,16 @@ export async function deleteAnnotation(annotation: UnifiedAnnotation): Promise<v
   } else {
     await deleteNote(annotation.id);
   }
+}
+
+/** 标注一键转笔记（API 模式）。返回新笔记 id 与标题；本地模式不支持。 */
+export async function convertAnnotationToNote(
+  annotationId: string,
+): Promise<{ noteId: string; noteTitle: string }> {
+  const mode = await resolveMode();
+  if (mode === 'local') {
+    throw new Error('转为笔记需要连接后端服务');
+  }
+  const doc = await annotationToNote(annotationId);
+  return { noteId: doc.id, noteTitle: doc.title };
 }

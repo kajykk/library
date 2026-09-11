@@ -48,6 +48,17 @@ const LIBRARY_QUERY_KEY = ['documents', 'library'] as const;
 // 与 batch_import.py 一致的可导入格式
 const SUPPORTED_FORMATS = ['epub', 'pdf', 'mobi', 'azw3', 'azw', 'txt'];
 
+// 智能书架（规则视图）：在读 / 未读 / 读完 / 最近添加
+type ShelfKey = 'all' | 'reading' | 'unread' | 'done' | 'recent';
+const RECENT_SHELF_SIZE = 20;
+const SHELF_LABELS: Record<ShelfKey, string> = {
+  all: '全部',
+  reading: '在读',
+  unread: '未读',
+  done: '读完',
+  recent: '最近添加',
+};
+
 interface LibrarySnapshot {
   books: Book[];
   categories: Category[];
@@ -65,6 +76,7 @@ function LibraryPageInner() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [activeShelf, setActiveShelf] = useState<ShelfKey>('all');
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -321,6 +333,18 @@ function LibraryPageInner() {
     e.target.value = '';
   };
 
+  // 最近添加书架的成员集合（一次排序，避免在逐书过滤里反复排序造成 O(n²)）
+  const recentBookIds = useMemo(
+    () =>
+      new Set(
+        [...books]
+          .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
+          .slice(0, RECENT_SHELF_SIZE)
+          .map((b) => b.id),
+      ),
+    [books],
+  );
+
   const filteredBooks = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
 
@@ -331,9 +355,38 @@ function LibraryPageInner() {
         .toLowerCase();
       const matchesQuery = !normalizedQuery || searchableText.includes(normalizedQuery);
       const matchesAuthor = !authorFilter || (book.author || '').includes(authorFilter);
-      return matchesCategory && matchesQuery && matchesAuthor;
+      const progress = book.readProgress ?? 0;
+      const matchesShelf = (() => {
+        switch (activeShelf) {
+          case 'reading':
+            return progress > 0 && progress < 100;
+          case 'unread':
+            return progress <= 0;
+          case 'done':
+            return progress >= 100;
+          case 'recent':
+            // 最近添加：按加入时间取前 N 本（规则书架，BookLore Magic Shelves 简化版）
+            return recentBookIds.has(book.id);
+          default:
+            return true;
+        }
+      })();
+      return matchesCategory && matchesQuery && matchesAuthor && matchesShelf;
     });
-  }, [books, searchQuery, selectedCategory, authorFilter]);
+  }, [books, searchQuery, selectedCategory, authorFilter, activeShelf, recentBookIds]);
+
+  // 各智能书架数量（一次遍历）
+  const shelfCounts = useMemo(() => {
+    const counts: Record<ShelfKey, number> = { all: books.length, reading: 0, unread: 0, done: 0, recent: 0 };
+    books.forEach((b) => {
+      const progress = b.readProgress ?? 0;
+      if (progress > 0 && progress < 100) counts.reading += 1;
+      else if (progress <= 0) counts.unread += 1;
+      else counts.done += 1;
+      if (recentBookIds.has(b.id)) counts.recent += 1;
+    });
+    return counts;
+  }, [books, recentBookIds]);
 
   const visibleBooks = filteredBooks.slice(0, visibleCount);
 
@@ -384,7 +437,7 @@ function LibraryPageInner() {
   // 过滤条件变化时回到第一页
   useEffect(() => {
     setVisibleCount(PAGE_STEP);
-  }, [searchQuery, selectedCategory, authorFilter]);
+  }, [searchQuery, selectedCategory, authorFilter, activeShelf]);
 
   const openReader = (book: Book) => {
     router.push(`/reader/${book.id}`);
@@ -541,6 +594,30 @@ function LibraryPageInner() {
         <div className="flex gap-6">
           {/* Sidebar */}
           <aside className="w-64 flex-shrink-0">
+            {/* 智能书架（规则视图，对标 BookLore Magic Shelves） */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
+              <h2 className="font-semibold text-gray-900 mb-3">书架</h2>
+              <div className="space-y-1">
+                {(Object.keys(SHELF_LABELS) as ShelfKey[]).map((shelf) => {
+                  const active = activeShelf === shelf && selectedCategory === null && !authorFilter && !searchQuery;
+                  return (
+                    <button
+                      key={shelf}
+                      onClick={() => setActiveShelf(shelf)}
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors ${
+                        active
+                          ? 'bg-primary-50 text-primary-700'
+                          : 'hover:bg-gray-50 text-gray-700'
+                      }`}
+                      title={shelf === 'reading' ? '进度 0% ~ 100% 之间' : shelf === 'unread' ? '从未打开' : shelf === 'done' ? '进度达 100%' : shelf === 'recent' ? `最近加入的 ${RECENT_SHELF_SIZE} 本` : ''}
+                    >
+                      <span>{SHELF_LABELS[shelf]}</span>
+                      <span className="text-sm text-gray-500">{shelfCounts[shelf]}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-semibold text-gray-900">分类</h2>

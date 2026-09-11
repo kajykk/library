@@ -11,6 +11,7 @@ import {
   addNoteAnnotation,
   createHighlight,
   deleteAnnotation as dsDeleteAnnotation,
+  convertAnnotationToNote,
   UnifiedAnnotation,
 } from '@/lib/dataSource';
 import {
@@ -29,10 +30,17 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Highlighter,
+  Languages,
+  Pause,
+  Play,
   Search,
+  Square,
+  Volume2,
   X,
 } from 'lucide-react';
 import AnnotationsSidebar from './reader/panels/AnnotationsSidebar';
+import LookupPopover from './reader/panels/LookupPopover';
+import { useTts } from './reader/hooks/useTts';
 
 interface BookReaderProps {
   book: Book;
@@ -54,12 +62,18 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   const [currentPage, setCurrentPage] = useState(initialPosition);
   const [totalPages, setTotalPages] = useState(book.totalPages || 100);
   const [fontSize, setFontSize] = useState(16);
+  // 阅读器独立主题：默认 / 护眼纸质 / 暗色（与全站暗色模式独立）
+  const [readerTheme, setReaderTheme] = useState<'default' | 'sepia' | 'dark'>('default');
   const [showSidebar, setShowSidebar] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<'bookmarks' | 'annotations'>('bookmarks');
   const [annotations, setAnnotations] = useState<UnifiedAnnotation[]>([]);
+  // 标注 → 笔记转换记录（会话内）：annotationId -> 新笔记 id，用于侧栏"查看笔记"
+  const [convertedNotes, setConvertedNotes] = useState<Record<string, string>>({});
   const [newNoteContent, setNewNoteContent] = useState('');
   const [showNoteInput, setShowNoteInput] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  // 词典/翻译查询弹窗（选中文字触发）
+  const [lookup, setLookup] = useState<{ x: number; y: number; text: string } | null>(null);
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [epubContent, setEpubContent] = useState<ParsedChapter[]>([]);
@@ -129,6 +143,25 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  // 恢复阅读主题偏好（BookReader 动态加载于客户端，安全访问 localStorage）
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('kb_reader_theme');
+      if (saved === 'sepia' || saved === 'dark') setReaderTheme(saved);
+    } catch {
+      // localStorage 不可用时保持默认主题
+    }
+  }, []);
+
+  const handleReaderThemeChange = (theme: 'default' | 'sepia' | 'dark') => {
+    setReaderTheme(theme);
+    try {
+      window.localStorage.setItem('kb_reader_theme', theme);
+    } catch {
+      // 忽略持久化失败
+    }
+  };
 
   const renderTxtPage = (page: number) => {
     const lines = txtLinesRef.current;
@@ -286,6 +319,17 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     setAnnotations((prev) => prev.filter((a) => a.id !== annotation.id));
     if (annotation.type === 'highlight') {
       unwrapHighlight(annotation.id);
+    }
+  };
+
+  /** 标注一键转笔记：生成带原文引用、批注与 [[书名]] 双链的笔记 */
+  const handleAnnotationToNote = async (annotation: UnifiedAnnotation) => {
+    try {
+      const { noteId, noteTitle } = await convertAnnotationToNote(annotation.id);
+      setConvertedNotes((prev) => ({ ...prev, [annotation.id]: noteId }));
+      toast.success(`已转为笔记《${noteTitle}》，可在笔记页查看`);
+    } catch (err) {
+      toast.error('转为笔记失败：' + (err as Error).message);
     }
   };
 
@@ -543,10 +587,50 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     }
   }, []);
 
+  // ---------- TTS 听书（Web Speech API） ----------
+
+  // PDF 无 DOM 文本层，暂不支持；TXT 整页作为单段朗读
+  const TTS_SUPPORT = book.format !== 'pdf';
+
+  const getTtsParagraphs = useCallback((): HTMLElement[] => {
+    const container = contentRef.current;
+    if (!container) return [];
+    if (book.format === 'txt') {
+      const pre = container.querySelector('pre');
+      return pre ? [pre] : [];
+    }
+    if (isChapteredFormat(book.format) && scrollMode) {
+      const active = container.querySelector(`section[data-chapter="${currentChapter}"]`);
+      if (active) {
+        return Array.from(active.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote'));
+      }
+    }
+    return Array.from(container.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote'));
+  }, [book.format, scrollMode, currentChapter]);
+
+  // 章节连读经 ref 走最新回调：useTts 只在朗读自然结束时调用，
+  // 回调内读取当次渲染的章节索引并触发翻页 + 再次 start，避免闭包过期
+  const ttsAutoAdvanceRef = useRef<() => void>(() => {});
+  const tts = useTts(getTtsParagraphs, () => ttsAutoAdvanceRef.current());
+  useEffect(() => {
+    ttsAutoAdvanceRef.current = () => {
+      if (!isChapteredFormat(book.format)) return;
+      if (currentChapter >= epubContent.length - 1) return;
+      void handlePageChange(currentChapter + 1).then(() => {
+        // 等新章节内容渲染完成后再取段落
+        setTimeout(() => tts.start(), 800);
+      });
+    };
+  }, [book.format, currentChapter, epubContent.length, handlePageChange, tts]);
+
   // 快捷键分发抽离至 useReaderShortcuts（Escape 分层关闭 → 翻页/全屏/书内搜索）
   useReaderShortcuts({
     onEscape: () => {
       // 逐层关闭浮层，最后才退出阅读器
+      if (lookup) {
+        setLookup(null);
+        return true;
+      }
       if (showBookSearch) {
         setShowBookSearch(false);
         return true;
@@ -593,7 +677,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
   };
 
   return (
-    <div className="fixed inset-0 bg-white z-50 flex flex-col">
+    <div className={`fixed inset-0 bg-white z-50 flex flex-col ${readerTheme === 'default' ? '' : `reader-theme-${readerTheme}`}`}>
       {/* Reader Header */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white">
         <div className="flex items-center gap-3">
@@ -643,6 +727,16 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
               {scrollMode ? '分页' : '连续'}
             </button>
           )}
+
+          {TTS_SUPPORT && (
+            <button
+              onClick={() => (tts.speaking ? tts.stop() : tts.start())}
+              className={`p-2 rounded-lg transition-colors ${tts.speaking ? 'bg-primary-50 text-primary-600' : 'hover:bg-gray-100'}`}
+              title={tts.speaking ? '停止朗读' : '朗读本章（TTS 听书）'}
+            >
+              <Volume2 className="w-5 h-5" />
+            </button>
+          )}
           
           <button
             onClick={handleAddBookmark}
@@ -675,6 +769,17 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
           </button>
           
           <div className="flex items-center gap-1 ml-4">
+            <select
+              value={readerTheme}
+              onChange={(e) => handleReaderThemeChange(e.target.value as 'default' | 'sepia' | 'dark')}
+              className="px-2 py-1.5 text-sm rounded-lg border border-gray-200 bg-white outline-none cursor-pointer"
+              title="阅读主题"
+              aria-label="阅读主题"
+            >
+              <option value="default">默认</option>
+              <option value="sepia">护眼</option>
+              <option value="dark">暗色</option>
+            </select>
             <button
               onClick={() => setFontSize(Math.max(12, fontSize - 2))}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-sm"
@@ -874,6 +979,8 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
             onJump={(position) => handlePageChange(position)}
             onDelete={handleDeleteAnnotation}
             highlightSupported={HIGHLIGHT_SUPPORT}
+            onToNote={handleAnnotationToNote}
+            convertedNotes={convertedNotes}
           />
         )}
       </div>
@@ -900,8 +1007,73 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
             >
               划线并批注
             </button>
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const { x, y, text } = selectionMenu;
+                setSelectionMenu(null);
+                setLookup({ x, y, text });
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs hover:bg-slate-700 rounded transition-colors"
+              title="查词典 / 翻译（单词走词典，句子走翻译）"
+            >
+              <Languages className="w-3.5 h-3.5" />
+              查词
+            </button>
           </div>
         </>
+      )}
+
+      {/* 词典/翻译结果弹窗 */}
+      {lookup && (
+        <LookupPopover
+          text={lookup.text}
+          x={lookup.x}
+          y={lookup.y}
+          onClose={() => setLookup(null)}
+        />
+      )}
+
+      {/* TTS 控制条 */}
+      {TTS_SUPPORT && tts.speaking && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[62] flex items-center gap-3 rounded-full bg-slate-900 text-white px-5 py-2.5 shadow-xl">
+          <button
+            onClick={tts.togglePause}
+            className="p-1 hover:bg-slate-700 rounded-full transition-colors"
+            title={tts.paused ? '继续朗读' : '暂停朗读'}
+            aria-label={tts.paused ? '继续朗读' : '暂停朗读'}
+          >
+            {tts.paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={tts.stop}
+            className="p-1 hover:bg-slate-700 rounded-full transition-colors"
+            title="停止朗读"
+            aria-label="停止朗读"
+          >
+            <Square className="w-4 h-4" />
+          </button>
+          <div className="flex items-center gap-1.5 text-xs">
+            <button
+              onClick={() => tts.setRate(Math.max(0.5, Math.round((tts.rate - 0.25) * 100) / 100))}
+              className="px-1.5 hover:bg-slate-700 rounded transition-colors"
+              title="降低语速"
+            >
+              −
+            </button>
+            <span className="w-10 text-center select-none">{tts.rate.toFixed(2)}x</span>
+            <button
+              onClick={() => tts.setRate(Math.min(3, Math.round((tts.rate + 0.25) * 100) / 100))}
+              className="px-1.5 hover:bg-slate-700 rounded transition-colors"
+              title="提高语速"
+            >
+              +
+            </button>
+          </div>
+          {tts.activeIndex !== null && (
+            <span className="text-[11px] text-slate-400 select-none">正在朗读…</span>
+          )}
+        </div>
       )}
     </div>
   );

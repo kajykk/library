@@ -21,6 +21,7 @@ vi.mock('@/lib/dataSource', () => ({
   addNoteAnnotation: vi.fn(),
   createHighlight: vi.fn(),
   deleteAnnotation: vi.fn(),
+  convertAnnotationToNote: vi.fn(),
 }));
 
 // pdfjs 动态导入 mock：spies 在 hoisted 阶段创建（工厂惰性执行也可引用）

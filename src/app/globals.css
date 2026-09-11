@@ -50,3 +50,102 @@ body {
   cursor: pointer;
   border-bottom: 1px dashed rgba(124, 58, 237, 0.4);
 }
+
+/* ===== 暗色模式（.dark 挂在 <html>，由 ThemeToggle 切换） =====
+   应用层大量使用 bg-white/text-gray-* 等硬编码工具类，逐一改造不现实；
+   此处按"retrofit 覆盖层"思路对最常用表面/文字/边框做集中暗色映射。 */
+
+.dark body {
+  color: #e2e8f0;
+  background:
+    radial-gradient(circle at top, rgba(56, 189, 248, 0.06), transparent 30%),
+    linear-gradient(180deg, #0b1220 0%, #0f172a 100%);
+}
+
+.dark ::selection {
+  background: rgba(56, 189, 248, 0.3);
+  color: #f1f5f9;
+}
+
+/* 表面 */
+.dark .bg-white { background-color: #1e293b; }
+.dark .bg-gray-50 { background-color: #16202f; }
+.dark .bg-gray-100 { background-color: #26334a; }
+.dark .bg-slate-50 { background-color: #16202f; }
+.dark .bg-slate-100 { background-color: #26334a; }
+.dark .bg-primary-50 { background-color: rgba(14, 165, 233, 0.12); }
+.dark .hover\:bg-gray-50:hover { background-color: #26334a; }
+.dark .hover\:bg-gray-100:hover { background-color: #26334a; }
+.dark .hover\:bg-gray-200:hover { background-color: #33415c; }
+.dark .hover\:bg-slate-100:hover { background-color: #26334a; }
+.dark .hover\:bg-slate-200:hover { background-color: #33415c; }
+/* 渐变卡片（笔记页快速捕获区）退化为纯色面板 */
+.dark .bg-gradient-to-br { background-image: none; }
+
+/* 文字 */
+.dark .text-gray-900 { color: #f1f5f9; }
+.dark .text-gray-800 { color: #e2e8f0; }
+.dark .text-gray-700 { color: #cbd5e1; }
+.dark .text-gray-600 { color: #94a3b8; }
+.dark .text-gray-500 { color: #94a3b8; }
+.dark .text-gray-400 { color: #64748b; }
+.dark .text-gray-300 { color: #475569; }
+.dark .text-slate-900 { color: #f1f5f9; }
+.dark .text-slate-800 { color: #e2e8f0; }
+.dark .text-slate-700 { color: #cbd5e1; }
+.dark .text-primary-600 { color: #38bdf8; }
+.dark .text-primary-700 { color: #7dd3fc; }
+.dark .text-primary-900 { color: #bae6fd; }
+
+/* 边框与分隔 */
+.dark .border-gray-100 { border-color: #293548; }
+.dark .border-gray-200 { border-color: #334155; }
+.dark .border-gray-300 { border-color: #475569; }
+.dark .border-slate-200 { border-color: #334155; }
+.dark .border-slate-100 { border-color: #293548; }
+.dark .border-primary-200 { border-color: rgba(56, 189, 248, 0.35); }
+.dark .border-primary-100 { border-color: rgba(56, 189, 248, 0.25); }
+
+/* 输入控件 */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: #16202f;
+  color: #e2e8f0;
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #64748b;
+}
+
+/* 卡片阴影在暗色下弱化 */
+.dark .hover\:shadow-sm:hover { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
+
+/* ===== 阅读器独立主题（阅读器工具栏切换，偏好存 localStorage） ===== */
+
+/* 护眼纸质 */
+.reader-theme-sepia { --r-surface: #f6eed7; --r-surface-alt: #efe5c8; --r-ink: #433422; }
+.reader-theme-dark { --r-surface: #14181f; --r-surface-alt: #1b2028; --r-ink: #d6dde6; }
+
+.reader-theme-sepia.bg-white, .dark .reader-theme-sepia.bg-white { background-color: var(--r-surface); }
+.reader-theme-sepia .bg-white, .dark .reader-theme-sepia .bg-white { background-color: var(--r-surface); }
+.reader-theme-sepia .bg-gray-50, .dark .reader-theme-sepia .bg-gray-50 { background-color: var(--r-surface-alt); }
+.reader-theme-sepia .text-gray-900, .dark .reader-theme-sepia .text-gray-900 { color: var(--r-ink); }
+.reader-theme-sepia .text-gray-700, .dark .reader-theme-sepia .text-gray-700 { color: var(--r-ink); }
+.reader-theme-sepia .text-gray-500, .dark .reader-theme-sepia .text-gray-500 { color: #7a6a52; }
+
+.reader-theme-dark.bg-white, .dark .reader-theme-dark.bg-white { background-color: var(--r-surface); }
+.reader-theme-dark .bg-white, .dark .reader-theme-dark .bg-white { background-color: var(--r-surface); }
+.reader-theme-dark .bg-gray-50, .dark .reader-theme-dark .bg-gray-50 { background-color: var(--r-surface-alt); }
+.reader-theme-dark .border-gray-200, .dark .reader-theme-dark .border-gray-200 { border-color: #2a323d; }
+.reader-theme-dark .text-gray-900, .dark .reader-theme-dark .text-gray-900 { color: var(--r-ink); }
+.reader-theme-dark .text-gray-700, .dark .reader-theme-dark .text-gray-700 { color: var(--r-ink); }
+.reader-theme-dark .text-gray-500, .dark .reader-theme-dark .text-gray-500 { color: #8a94a3; }
+.reader-theme-dark .hover\:bg-gray-100:hover { background-color: #242c37; }
+
+/* TTS 当前朗读段落高亮跟随 */
+.kb-tts-active {
+  background: rgba(14, 165, 233, 0.14);
+  border-radius: 4px;
+  transition: background 0.3s ease;
+}

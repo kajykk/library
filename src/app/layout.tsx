@@ -3,7 +3,8 @@ import './globals.css';
 import Nav from '@/components/Nav';
 import ServiceWorkerRegister from '@/components/ServiceWorkerRegister';
 import ErrorBoundary from '@/components/ErrorBoundary';
-import CommandPalette from '@/components/CommandPalette';
+import LazyCommandPalette from '@/components/LazyCommandPalette';
+import WebVitals from '@/components/WebVitals';
 import Providers from './Providers';
 
 export const metadata: Metadata = {
@@ -26,8 +27,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head>
+        {/* 主题预置：首屏渲染前按 localStorage 恢复暗色，避免白屏闪烁（FOUC） */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{if(localStorage.getItem('kb_theme')==='dark'){document.documentElement.classList.add('dark')}}catch(e){}})()`,
+          }}
+        />
+      </head>
       <body className="antialiased">
+        <WebVitals />
         <ServiceWorkerRegister />
         <Providers>
           {/* Nav 置于错误边界之外：页面崩溃时导航仍然可用，用户不会被错误页困住 */}
@@ -35,7 +45,7 @@ export default function RootLayout({
           <ErrorBoundary>
             {children}
           </ErrorBoundary>
-          <CommandPalette />
+          <LazyCommandPalette />
         </Providers>
       </body>
     </html>

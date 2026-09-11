@@ -422,6 +422,98 @@ export function searchAnnotations(q: string, limit = 20): Promise<AnnotationHit[
   return request<AnnotationHit[]>(`/api/annotations/search?${params}`);
 }
 
+// ---------- 标注 → 知识流转（每日回顾 / 转笔记 / 导出） ----------
+
+export interface ReviewParams {
+  since?: string;
+  type?: 'bookmark' | 'highlight' | 'note';
+  limit?: number;
+  offset?: number;
+}
+
+export function reviewAnnotations(params: ReviewParams = {}): Promise<AnnotationHit[]> {
+  const qs: Record<string, string> = {};
+  if (params.since) qs.since = params.since;
+  if (params.type) qs.type = params.type;
+  if (params.limit != null) qs.limit = String(params.limit);
+  if (params.offset != null) qs.offset = String(params.offset);
+  const query = new URLSearchParams(qs).toString();
+  return request<AnnotationHit[]>(`/api/annotations/review${query ? `?${query}` : ''}`);
+}
+
+/** 标注一键转笔记：返回新笔记文档（含 [[书名]] 双链与来源锚点） */
+export function annotationToNote(annotationId: string): Promise<ApiDocument> {
+  return request<ApiDocument>(`/api/annotations/${annotationId}/to-note`, { method: 'POST' });
+}
+
+/** 通用二进制下载（带鉴权头），触发浏览器保存 */
+async function downloadAttachment(path: string, filename: string): Promise<void> {
+  const resp = await fetch(`${getApiBaseUrl()}${path}`, {
+    headers: { 'X-API-Token': getApiToken() },
+  });
+  if (!resp.ok) throw new Error(`API ${resp.status}: ${resp.statusText}`);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 全部标注导出：按书分组 Markdown zip */
+export async function downloadAnnotationsExport(): Promise<void> {
+  await downloadAttachment(
+    '/api/export/annotations',
+    `annotations_export_${new Date().toISOString().slice(0, 10)}.zip`,
+  );
+}
+
+/** 标注 TSV 导出（Anki/表格可导入） */
+export async function downloadAnnotationsTsv(): Promise<void> {
+  await downloadAttachment(
+    '/api/export/annotations.tsv',
+    `annotations_${new Date().toISOString().slice(0, 10)}.tsv`,
+  );
+}
+
+// ---------- 在线元数据 ----------
+
+export interface MetadataCandidate {
+  source: string;
+  title: string;
+  author: string;
+  publisher: string;
+  isbn: string;
+  description: string;
+  language: string;
+  year: string;
+  cover_url: string | null;
+}
+
+export function searchMetadataOnline(q: string, limit = 6): Promise<MetadataCandidate[]> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  return request<MetadataCandidate[]>(`/api/documents/metadata/search?${params}`);
+}
+
+export interface MetadataApplyPayload {
+  title?: string;
+  author?: string;
+  publisher?: string;
+  isbn?: string;
+  description?: string;
+  language?: string;
+  cover_url?: string | null;
+}
+
+export function applyMetadata(docId: string, payload: MetadataApplyPayload): Promise<ApiDocument> {
+  return request<ApiDocument>(`/api/documents/${docId}/metadata`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 // ---------- 健康面板 / 作者聚合 ----------
 
 export interface HealthItem {

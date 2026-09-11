@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -14,10 +15,30 @@ import {
   Search,
   Sparkles,
 } from 'lucide-react';
-import { ApiDocument, listDocuments, createDocument, patchDocument, deleteDocument, downloadMarkdownExport } from '@/lib/api/client';
+import {
+  ApiDocument,
+  listDocuments,
+  createDocument,
+  patchDocument,
+  deleteDocument,
+  downloadMarkdownExport,
+  reviewAnnotations,
+} from '@/lib/api/client';
+import { buildDailyNoteContent } from '@/lib/dailyNote';
 import { useDataSourceMode } from '@/lib/useDataSourceMode';
-import NoteEditor from '@/components/notes/NoteEditor';
 import { useDialog, useToast } from '@/components/ui';
+
+// TipTap / yjs / prosemirror 等重型编辑器依赖：仅在用户打开笔记编辑时加载，
+// 避免进入笔记列表页即下载数百 KB 的编辑器代码
+const NoteEditor = dynamic(() => import('@/components/notes/NoteEditor'), {
+  ssr: false,
+  loading: () => (
+    <main className="max-w-4xl mx-auto px-4 py-12 text-center text-gray-400">
+      <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-gray-200 border-t-primary-600" />
+      <p className="mt-3 text-sm">正在打开编辑器…</p>
+    </main>
+  ),
+});
 
 // ---------- 笔记模板 ----------
 
@@ -196,7 +217,19 @@ function NotesPageInner() {
       setEditingId(existing.id);
       return;
     }
-    const doc = await createDocument({ type: 'note', title, content: '' });
+
+    // 自动嵌入今日划线/批注（按书分组，带 [[书名]] 双链），对标 Obsidian 每日笔记
+    let content = '';
+    try {
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const hits = await reviewAnnotations({ since: todayStart.toISOString(), limit: 200 });
+      content = buildDailyNoteContent(hits, title);
+    } catch (err) {
+      // 后端不可用/无标注时退化为空白模板
+      console.warn('获取今日标注失败:', err);
+    }
+
+    const doc = await createDocument({ type: 'note', title, content });
     refetchNotes();
     setEditingId(doc.id);
   };

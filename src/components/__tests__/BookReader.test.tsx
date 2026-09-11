@@ -20,6 +20,7 @@ vi.mock('@/lib/dataSource', () => ({
   addNoteAnnotation: vi.fn(),
   createHighlight: vi.fn(),
   deleteAnnotation: vi.fn(),
+  convertAnnotationToNote: vi.fn(),
 }));
 
 const mockedGetFile = vi.mocked(getFileArrayBuffer);

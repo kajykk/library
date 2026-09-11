@@ -20,6 +20,7 @@ interface PaletteItem {
 const INBOX_ITEM_ID = '__inbox__';
 const REVIEW_ITEM_ID = '__review__';
 const COMPLETE_ITEM_ID = '__complete__';
+const REVIEW_PAGE_ITEM_ID = '__review_page__';
 
 const TYPE_LABELS: Record<string, string> = {
   book: '书籍',
@@ -53,11 +54,11 @@ function parseClipQuery(query: string): PaletteItem | null {
   };
 }
 
-export default function CommandPalette() {
+export default function CommandPalette({ initialOpen = false }: { initialOpen?: boolean }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const [mode, setMode] = useState<'api' | 'local' | null>(null);
@@ -106,6 +107,15 @@ export default function CommandPalette() {
     const clip = parseClipQuery(query);
     const quickActions: PaletteItem[] = !trimmed
       ? [
+          {
+            id: REVIEW_PAGE_ITEM_ID,
+            title: '打开每日回顾',
+            type: 'note',
+            description: '重温划线与批注，一键存入笔记或跳回原文',
+            action: async () => {
+              router.push('/review');
+            },
+          },
           {
             id: INBOX_ITEM_ID,
             title: '收集到待整理',
