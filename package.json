@@ -42,7 +42,7 @@
     "@types/react-dom": "^18.3.7",
     "@types/uuid": "^9.0.8",
     "autoprefixer": "^10.5.0",
-    "eslint": "^8.57.0",
+    "eslint": "^10.10.0",
     "eslint-config-next": "^14.2.5",
     "jsdom": "^29.1.1",
     "postcss": "^8.5.10",
