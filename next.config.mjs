@@ -1,3 +1,8 @@
+// CSP connect-src：构建期可覆盖，默认保持宽松（API 地址运行时配置）
+const cspConnectSrc =
+  process.env.NEXT_PUBLIC_CSP_CONNECT_SRC ||
+  "'self' http: https: ws: wss:";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -28,7 +33,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' http: https: ws: wss:",
+              `connect-src ${cspConnectSrc}`,
               "worker-src 'self' blob:",
               "media-src 'self' blob: data:",
               "frame-src 'self' blob:",

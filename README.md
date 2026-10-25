@@ -78,6 +78,19 @@ npm run build && npm run start   # 生产
 
 > 已废弃/未实现的变量:`KB_EXTRACT_TIMEOUT_S` 此前写在表里但代码中不存在,单个文件正文提取预算目前硬编码为 5s(`content_extract.EXTRACT_TIMEOUT`)。
 
+## 环境变量(前端)
+
+### CSP connect-src 配置
+
+默认 CSP 的 `connect-src` 为 `'self' http: https: ws: wss:`(宽松,兼容运行时 API 配置)。
+如需收紧,构建时设置:
+
+```bash
+NEXT_PUBLIC_CSP_CONNECT_SRC="'self' https://api.example.com wss://api.example.com" npm run build
+```
+
+注意:`NEXT_PUBLIC_*` 在构建期内联进产物,运行时修改无效。
+
 ## 测试
 
 ```bash
