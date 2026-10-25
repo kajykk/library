@@ -18,15 +18,15 @@
     "@lingo-reader/mobi-parser": "^0.4.6",
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-virtual": "^3.14.9",
-    "@tiptap/extension-collaboration": "^3.30.1",
-    "@tiptap/pm": "^3.30.1",
-    "@tiptap/react": "^3.30.1",
-    "@tiptap/starter-kit": "^3.30.1",
+    "@tiptap/extension-collaboration": "^3.30.5",
+    "@tiptap/pm": "^3.30.5",
+    "@tiptap/react": "^3.30.5",
+    "@tiptap/starter-kit": "^3.30.5",
     "@xyflow/react": "^12.11.5",
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.17",
     "jszip": "^3.10.1",
     "lucide-react": "^0.400.0",
-    "next": "^15.5.24",
+    "next": "^15.5.28",
     "pdfjs-dist": "^4.10.38",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -36,7 +36,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
-    "@next/bundle-analyzer": "^15.5.24",
+    "@next/bundle-analyzer": "^15.5.28",
     "@playwright/test": "^1.62.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
@@ -49,11 +49,19 @@
     "autoprefixer": "^10.5.0",
     "cross-env": "^10.1.0",
     "eslint": "^8.57.0",
-    "eslint-config-next": "^15.5.24",
+    "eslint-config-next": "^15.5.28",
     "jsdom": "^29.1.1",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "@tiptap/extension-bubble-menu": "3.30.5",
+    "@tiptap/extension-floating-menu": "3.30.5",
+    "fflate": "0.8.3",
+    "markdown-it": "14.3.3",
+    "prosemirror-view": "1.42.8",
+    "source-map-js": "1.2.2"
   }
 }
