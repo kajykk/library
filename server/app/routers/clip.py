@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Document
 from ..services import file_storage, url_safety
-from .documents import _get_or_create_tag, sync_mention_links
+from ..services.tags import get_or_create_tag
+from .documents import sync_mention_links
 
 router = APIRouter(prefix="/clip", tags=["clip"])
 
@@ -79,7 +80,7 @@ def create_clip(payload: ClipRequest, db: Session = Depends(get_db)):
     if payload.tags:
         db.flush()
         for name in payload.tags:
-            doc.tags.append(_get_or_create_tag(db, name))
+            doc.tags.append(get_or_create_tag(db, name))
 
     sync_mention_links(db, doc)
     db.commit()

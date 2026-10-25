@@ -18,7 +18,8 @@ from ..database import get_db
 from ..models import Annotation, Collection, Document, ReadingRecord
 from ..schemas import MigrateMetaPayload, MigrateMetaResult
 from ..services import file_storage
-from .documents import _get_or_create_tag, get_doc_or_404
+from ..services.tags import get_or_create_tag
+from .documents import get_doc_or_404
 
 router = APIRouter(prefix="/migrate", tags=["migrate"])
 
@@ -86,7 +87,7 @@ def migrate_meta(payload: MigrateMetaPayload, db: Session = Depends(get_db)):
             updated_at=_ms_to_dt(book.lastReadAt) or now,
         )
         for tag_name in book.tags:
-            doc.tags.append(_get_or_create_tag(db, tag_name))
+            doc.tags.append(get_or_create_tag(db, tag_name))
             tag_count += 1
         db.add(doc)
     db.flush()
