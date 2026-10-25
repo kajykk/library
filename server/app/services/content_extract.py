@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import multiprocessing
 import os
 import re
 import shutil
@@ -36,6 +37,11 @@ _FAST_POOL = concurrent.futures.ThreadPoolExecutor(
 _SLOW_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="kb-extract-slow"
 )
+
+# 可选的 PDF 进程隔离（KB_EXTRACT_PROCESS_ISOLATION=1）：线程无法取消，
+# 卡死的 PDF 解析会永久占住 worker；进程池超时后重建，避免后续任务排队。
+# spawn 必选：Windows 下 fork 不安全，且应用本身是多线程的。
+_PROCESS_POOL: concurrent.futures.ProcessPoolExecutor | None = None
 
 # 连续超时熔断：连续 N 次超时后该通道短期停用，让被放弃但仍占着 worker 的
 # 任务有机会排空。冷却后放行一次探测；成功即清零，避免通道被永久禁用
@@ -264,12 +270,50 @@ def _extract_html_bytes(path: Path) -> str:
     return re.sub(r"\s+", " ", tree.text_content() or "").strip()[:MAX_CHARS]
 
 
+def _get_process_pool() -> concurrent.futures.ProcessPoolExecutor:
+    global _PROCESS_POOL
+    if _PROCESS_POOL is None:
+        _PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+        )
+    return _PROCESS_POOL
+
+
+def _reset_process_pool() -> None:
+    global _PROCESS_POOL
+    if _PROCESS_POOL is not None:
+        _PROCESS_POOL.shutdown(wait=False, cancel_futures=True)
+        _PROCESS_POOL = None
+
+
+def _pdf_extract_worker(path_str: str, ocr: bool) -> str:
+    """进程池入口：必须是模块级函数（可 pickle）。"""
+    return _extract_pdf(Path(path_str), ocr=ocr)
+
+
+def _extract_pdf_isolated(path: Path, ocr: bool) -> str:
+    timeout = OCR_TIMEOUT if ocr else EXTRACT_TIMEOUT
+    try:
+        return _get_process_pool().submit(
+            _pdf_extract_worker, str(path), ocr
+        ).result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning("PDF 进程池提取超时（>%ss），已终止并跳过", timeout)
+        _reset_process_pool()
+        return ""
+    except Exception as exc:
+        logger.warning("PDF 进程池提取失败: %s", exc)
+        return ""
+
+
 def extract_text_from_file(fmt: str, path: Path) -> str:
     """提取正文。每个文件独立线程 + 时间预算，超时跳过；
     不等待被放弃的线程（shutdown(wait=False)），避免慢文件阻塞后续文件。
 
     PDF 文件先做内容嗅探：头部不是 %PDF 的「假 PDF」（如误存为 .pdf 的网页）
     按 HTML / 纯文本提取，可恢复大量本无法检索的文档。
+    设置 KB_EXTRACT_PROCESS_ISOLATION=1 时，真实 PDF 改走单进程池（spawn）。
     """
     if not path.is_file():
         return ""
@@ -281,6 +325,8 @@ def extract_text_from_file(fmt: str, path: Path) -> str:
                 return _bounded(lambda: _extract_html_bytes(path))
             logger.info("假 PDF（头部不是 PDF 标记）按文本提取: %s", path)
             return _bounded(lambda: _read_text(path))
+        if os.getenv("KB_EXTRACT_PROCESS_ISOLATION", "0") == "1":
+            return _extract_pdf_isolated(path, ocr=_ocr_available())
         if os.getenv("KB_ENABLE_OCR") == "1" and _ocr_available():
             # OCR 走慢池：90s 预算的任务不能再占用快通道的 worker
             return _bounded(
