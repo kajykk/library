@@ -62,6 +62,7 @@
     "fflate": "0.8.3",
     "markdown-it": "14.3.3",
     "prosemirror-view": "1.42.8",
-    "source-map-js": "1.2.2"
+    "source-map-js": "1.2.2",
+    "postcss": "$postcss"
   }
 }

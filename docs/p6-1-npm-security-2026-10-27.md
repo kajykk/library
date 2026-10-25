@@ -97,3 +97,14 @@ tiptap 的升级说明：附件要求「不准顺带升级 tiptap」，但 `@tip
 # 必须显式指定官方 registry：本机 npmmirror 不支持 audit endpoint
 npm audit --omit=dev --registry=https://registry.npmjs.org
 ```
+
+## 追加：postcss high 清零（P6-1b）
+
+在 P6-1 初版中残留 `postcss <=8.5.22` high（位于 `next@15.5.28` 内嵌的 `postcss@8.4.31`，next 精确锁定）。复核后决定清除：
+
+- 根因：`next` 的 `dependencies.postcss` 精确写死 `8.4.31`（无 caret），普通嵌套 override 与全局 override 都会被 npm 判为 `invalid` 或 `EOVERRIDE`。
+- 解法：使用 npm 的 `$` 引用语法 `"overrides": { "postcss": "$postcss" }`，强制所有嵌套 postcss 与直接依赖解析出的版本对齐。当前直接依赖解析为 `postcss@8.5.31`，于是 next 内嵌 postcss 被去重到 8.5.31。
+- 结果：`npm audit --omit=dev` → **0 vulnerabilities（0 critical / 0 high / 0 moderate）**。
+- 回归：`npx npm@10 ci` 成功、`@floating-ui/dom` 保留、tsc 干净、lint 0、vitest 58、build 成功、e2e 11 passed。
+
+风险说明：postcss 8.4→8.5 为 semver-minor，next 仅用标准 postcss API；build 与 e2e 全绿证明无回归。
