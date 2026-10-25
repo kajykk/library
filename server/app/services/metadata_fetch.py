@@ -118,8 +118,10 @@ def download_cover(url: str) -> tuple[bytes, str]:
         url, max_bytes=MAX_COVER_BYTES, timeout=TIMEOUT_SECONDS
     )
 
-    content_type = resp.content_type or "image/jpeg"
-    if not content_type.startswith("image/"):
+    # 只接受位图；SVG 可携带脚本，且会进入 next/image 优化链路，一律拒绝
+    allowed = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+    content_type = (resp.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type not in allowed:
         raise ValueError(f"Unexpected content type: {content_type}")
-    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
+    ext = allowed[content_type]
     return resp.body, ext

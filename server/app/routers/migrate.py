@@ -176,6 +176,9 @@ async def migrate_cover(
     data = await _read_bounded(file, _COVER_MAX_BYTES)
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    # 扩展名白名单：封面只允许位图，避免 SVG 进入 next/image 优化链路
+    if ext not in {"jpg", "jpeg", "png", "webp", "gif"}:
+        raise HTTPException(status_code=400, detail="Unsupported cover format")
     file_storage.delete(doc.cover_path)
     doc.cover_path = file_storage.save_cover(doc.id, data, ext)
     db.commit()

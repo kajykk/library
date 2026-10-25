@@ -325,3 +325,27 @@ def test_list_documents_escapes_like_wildcards(client, auth_headers):
     titles = [d["title"] for d in resp.json()]
     assert f"{marker}_版" in titles
     assert f"{marker}%版" not in titles
+
+
+def test_migrate_cover_rejects_svg(client, auth_headers):
+    """封面只允许位图：SVG 可携带脚本且会进入 next/image 优化链路。"""
+    note = client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": "封面格式校验", "content": ""},
+    ).json()
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    resp = client.post(
+        f"{API}/migrate/cover",
+        headers=auth_headers,
+        data={"doc_id": note["id"]},
+        files={"file": ("evil.svg", io.BytesIO(svg), "image/svg+xml")},
+    )
+    assert resp.status_code == 400
+    ok = client.post(
+        f"{API}/migrate/cover",
+        headers=auth_headers,
+        data={"doc_id": note["id"]},
+        files={"file": ("ok.png", io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32), "image/png")},
+    )
+    assert ok.status_code == 204
