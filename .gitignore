@@ -84,4 +84,12 @@ server/check_lib.py
 server/import_run.py
 server/import_todo.txt
 server/predup.py
-server/scripts/
+# server/scripts/：只忽略已知 one-off，新增运维/审计脚本默认可跟踪
+server/scripts/backfill_covers.py
+server/scripts/backfill_covers_*.csv
+server/scripts/import_missing_books.py
+server/scripts/import_missing_report.txt
+server/scripts/inspect_nocover*.py
+server/scripts/inspect_nomatch.py
+server/scripts/test_backfill_match.py
+server/scripts/verify_covers*.py
