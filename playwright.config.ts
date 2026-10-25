@@ -1,9 +1,26 @@
 import { defineConfig } from '@playwright/test';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const BACKEND_PORT = 8111;
 const FRONTEND_PORT = 3111;
 const RUN_ID = crypto.randomUUID().slice(0, 8);
+
+// standalone 产物不含 .next/static 与 public（Dockerfile 由镜像层另行 COPY），
+// e2e 启动 standalone server 前补齐，否则页面 JS/静态资源全部 404。
+const standaloneDir = path.join(process.cwd(), '.next', 'standalone');
+if (fs.existsSync(path.join(standaloneDir, 'server.js'))) {
+  const standaloneAssets: Array<[string, string]> = [
+    [path.join(process.cwd(), '.next', 'static'), path.join(standaloneDir, '.next', 'static')],
+    [path.join(process.cwd(), 'public'), path.join(standaloneDir, 'public')],
+  ];
+  for (const [src, dest] of standaloneAssets) {
+    if (fs.existsSync(src)) {
+      fs.cpSync(src, dest, { recursive: true });
+    }
+  }
+}
 
 export default defineConfig({
   testDir: 'e2e',
@@ -41,12 +58,17 @@ export default defineConfig({
       },
     },
     {
-      // 使用已构建产物启动，避免 next dev 首次编译超时
-      command: 'npm run start -- -p 3111',
+      // 使用 standalone 产物启动（比 next start 轻量，启动更快）
+      command: 'node .next/standalone/server.js',
       cwd: '.',
       url: `http://localhost:${FRONTEND_PORT}`,
       reuseExistingServer: false,
       timeout: 60_000,
+      env: {
+        PORT: String(FRONTEND_PORT),
+        HOSTNAME: '0.0.0.0',
+        NODE_ENV: 'production',
+      },
     },
   ],
 });
