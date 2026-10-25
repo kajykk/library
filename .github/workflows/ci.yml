@@ -26,7 +26,7 @@ jobs:
         run: |
           set -o pipefail
           docker run --rm -v "$PWD:/repo" -w /repo hadolint/hadolint:latest \
-            --failure-threshold error \
+            hadolint --failure-threshold error \
             Dockerfile server/Dockerfile db/Dockerfile 2>&1 | tee hadolint-report.txt
       - name: Upload hadolint report
         if: always()
