@@ -102,7 +102,8 @@ function NotesPageInner() {
       }),
     enabled: mode === 'api',
   });
-  const notes = notesQuery.data ?? [];
+  // 稳定引用：避免 data 未变时 `?? []` 每次渲染新建数组，穿透下游 useMemo 依赖
+  const notes = useMemo(() => notesQuery.data ?? [], [notesQuery.data]);
   const isLoading = notesQuery.isLoading;
 
   // 列表本地过滤：标题/标签

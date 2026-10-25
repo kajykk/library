@@ -163,12 +163,13 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     }
   };
 
-  const renderTxtPage = (page: number) => {
+  // setContent 与 ref 均稳定，空依赖保证 handlePageChange 的依赖引用不变
+  const renderTxtPage = useCallback((page: number) => {
     const lines = txtLinesRef.current;
     if (!lines) return;
     const start = page * TXT_LINES_PER_PAGE;
     setContent(lines.slice(start, start + TXT_LINES_PER_PAGE).join('\n'));
-  };
+  }, []);
 
   const loadContent = async () => {
     setIsLoading(true);
@@ -282,7 +283,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
       ? Math.round(((isPdf ? target : target + 1) / totalPages) * 100)
       : 0;
     await saveProgress(progress, target);
-  }, [book.format, currentPage, epubContent, saveProgress, totalPages]);
+  }, [book.format, currentPage, epubContent, renderPdfPage, renderTxtPage, saveProgress, totalPages]);
 
   const handleAddBookmark = async () => {
     const note = isChapteredFormat(book.format) && epubContent[currentChapter]
@@ -564,7 +565,7 @@ export default function BookReader({ book, onClose, initialPositionOverride }: B
     );
     sections.forEach((s) => observer.observe(s));
     return () => observer.disconnect();
-  }, [scrollMode, epubContent, book.id, book.format]);
+  }, [scrollMode, epubContent, book.id, book.format, saveProgress]);
 
   // 滚动模式初始定位
   useEffect(() => {

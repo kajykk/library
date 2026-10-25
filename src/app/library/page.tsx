@@ -30,6 +30,7 @@ import {
   Eye
 } from 'lucide-react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import BookEditModal from '@/components/BookEditModal';
 import StatisticsPanel from '@/components/StatisticsPanel';
@@ -746,10 +747,12 @@ function LibraryPageInner() {
                         onClick={() => openReader(book)}
                       >
                         {coverUrls[book.id] ? (
-                          <img
-                            src={coverUrls[book.id]}
+                          <Image
+                            src={coverUrls[book.id]!}
                             alt={book.title}
-                            loading="lazy"
+                            fill
+                            unoptimized
+                            sizes="(max-width: 768px) 50vw, (max-width: 1024px) 33vw, 20vw"
                             className="w-full h-full object-cover"
                           />
                         ) : (
@@ -813,10 +816,12 @@ function LibraryPageInner() {
                         onClick={() => openReader(book)}
                       >
                         {coverUrls[book.id] ? (
-                          <img
-                            src={coverUrls[book.id]}
+                          <Image
+                            src={coverUrls[book.id]!}
                             alt={book.title}
-                            loading="lazy"
+                            width={64}
+                            height={80}
+                            unoptimized
                             className="w-full h-full object-cover"
                           />
                         ) : (
