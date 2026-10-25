@@ -67,16 +67,13 @@ _REINDEX_STATEMENTS = [
 _available: bool | None = None
 
 
-def ensure_fts_index(engine: Engine) -> bool:
-    """创建 FTS5 表/触发器并重建索引。返回是否可用。"""
+def _setup(engine: Engine) -> bool:
+    """创建 FTS5 虚拟表与触发器（幂等）。返回 FTS 是否可用。"""
     global _available
-    if _available is not None:
-        return _available
-
     if engine.dialect.name != "sqlite":
+        # PostgreSQL 走 search_vector/zhparser 分支，本模块不参与
         _available = False
         return False
-
     try:
         with engine.begin() as conn:
             conn.exec_driver_sql("SELECT fts5(?)", ("initialize",))
@@ -85,18 +82,58 @@ def ensure_fts_index(engine: Engine) -> bool:
                 conn.exec_driver_sql(drop_sql)
             for trigger_sql in _TRIGGER_STATEMENTS:
                 conn.exec_driver_sql(trigger_sql)
-            stale = conn.exec_driver_sql(
-                "SELECT (SELECT count(*) FROM documents) - (SELECT count(*) FROM documents_fts)"
-            ).scalar()
-            if stale != 0:
-                for reindex_sql in _REINDEX_STATEMENTS:
-                    conn.exec_driver_sql(reindex_sql)
-        _available = True
-        logger.info("FTS5 trigram 全文索引已就绪")
     except DatabaseError as exc:
         _available = False
         logger.warning("FTS5 不可用（%s），检索回退 ILIKE", exc)
-    return _available
+        return False
+    _available = True
+    logger.info("FTS5 trigram 全文索引已就绪")
+    return True
+
+
+def ensure_fts_index(engine: Engine, reindex: bool = True) -> bool:
+    """确保 FTS5 表/触发器存在，并在落后时回填。返回是否可用。
+
+    reindex=False 用于启动路径：只建结构不回填，避免大库阻塞启动
+    （落后量由 fts_stale_count 探测，回填转后台任务）。
+    """
+    if _available is None:
+        _setup(engine)
+    if _available and reindex and fts_stale_count(engine) != 0:
+        reindex_fts(engine)
+    return bool(_available)
+
+
+def fts_stale_count(engine: Engine) -> int:
+    """documents 与 FTS 表的行数差（>0 表示索引落后）。不可用或探测失败返回 0。"""
+    if not fts_available():
+        return 0
+    try:
+        with engine.begin() as conn:
+            diff = conn.exec_driver_sql(
+                "SELECT (SELECT count(*) FROM documents) "
+                "- (SELECT count(*) FROM documents_fts)"
+            ).scalar()
+        return int(diff or 0)
+    except DatabaseError as exc:
+        logger.warning("FTS 落后量探测失败：%s", exc)
+        return 0
+
+
+def reindex_fts(engine: Engine) -> int:
+    """全量回填 FTS 索引（同步，大库耗时；供后台任务/脚本调用）。返回索引总行数。"""
+    if not fts_available():
+        return 0
+    try:
+        with engine.begin() as conn:
+            for reindex_sql in _REINDEX_STATEMENTS:
+                conn.exec_driver_sql(reindex_sql)
+            total = conn.exec_driver_sql(f"SELECT count(*) FROM {FTS_TABLE}").scalar()
+        logger.info("FTS5 回填完成，共 %s 条", total)
+        return int(total or 0)
+    except DatabaseError as exc:
+        logger.warning("FTS5 回填失败：%s", exc)
+        return 0
 
 
 def fts_available() -> bool:

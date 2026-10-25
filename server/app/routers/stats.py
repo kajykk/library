@@ -41,6 +41,17 @@ class StatsOut(BaseModel):
     top_tags: list[TagStat]
 
 
+def _to_utc(dt: datetime) -> datetime:
+    """统一到 UTC。
+
+    SQLite 返回 naive datetime（库里存的就是 UTC，见 annotations.py 的写入侧说明），
+    PostgreSQL 返回 aware datetime。此前对两者一律 astimezone(utc)，而 astimezone 作用
+    在 naive 值上会**按系统本地时区解释**它 —— 在 UTC+8 机器上每条记录都被当成
+    本地时间再换算，日期整体偏移 8 小时。naive 必须按 UTC 原样标注，不能换算。
+    """
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
 def _build_day_map(records: list[ReadingRecord]) -> dict[str, float]:
     """按 UTC 日聚合阅读分钟数（跨 SQLite/PostgreSQL 一致）"""
     day_map: dict[str, float] = {}
@@ -48,7 +59,7 @@ def _build_day_map(records: list[ReadingRecord]) -> dict[str, float]:
         start_time = record.start_time
         end_time = record.end_time
         if isinstance(start_time, datetime) and isinstance(end_time, datetime):
-            date = start_time.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            date = _to_utc(start_time).strftime("%Y-%m-%d")
             minutes = max(0.0, (end_time - start_time).total_seconds() / 60)
         else:
             date = str(start_time)
@@ -158,40 +169,70 @@ class HealthOut(BaseModel):
     unread: list[HealthItem]
 
 
+# 占位提及扫描的分页批大小：此前一次性 select(Document) 把全库（含每篇正文）
+# 载入内存后再在 Python 里跑正则。health 是前端统计面板会周期性拉取的端点。
+_HEALTH_SCAN_BATCH = 200
+_HEALTH_ITEM_LIMIT = 50
+
+
 @router.get("/health", response_model=HealthOut)
 def get_health(db: Session = Depends(get_db)):
-    """知识库健康面板：孤立文档、占位提及（[[x]] 无目标）、未开始阅读的书"""
-    docs = list(
-        db.scalars(
-            select(Document)
-            .where(Document.deleted_at.is_(None))
-            .order_by(Document.updated_at.desc())
-        )
-    )
-    linked = set(db.scalars(select(Link.source_id))) | set(db.scalars(select(Link.target_id)))
-    orphans = [
-        HealthItem(id=str(d.id), title=d.title, type=d.type)
-        for d in docs
-        if d.id not in linked
-    ][:50]
+    """知识库健康面板：孤立文档、占位提及（[[x]] 无目标）、未开始阅读的书。
 
-    titles = {d.title.strip() for d in docs if d.title.strip()}
-    counter: Counter[str] = Counter()
-    for d in docs:
-        mentions = set(MENTION_PATTERN.findall(d.content or ""))
-        for mention in mentions:
-            clean = mention.strip()
-            if clean and clean not in titles:
-                counter[clean] += 1
-    placeholders = [
-        PlaceholderMention(mention=name, count=count)
-        for name, count in counter.most_common(50)
+    三项各自在 SQL 侧收敛，不再全表载入 ORM 对象：
+    - 孤立/未读：只取 id/title/type 三列并 limit，正文不进内存；
+    - 占位提及：必须扫正文，但先用 LIKE '%[[%' 在数据库侧预筛，再按批分页读取。
+    """
+    alive = Document.deleted_at.is_(None)
+
+    linked_sources = select(Link.source_id)
+    linked_targets = select(Link.target_id)
+    orphan_rows = db.execute(
+        select(Document.id, Document.title, Document.type)
+        .where(alive, Document.id.notin_(linked_sources), Document.id.notin_(linked_targets))
+        .order_by(Document.updated_at.desc())
+        .limit(_HEALTH_ITEM_LIMIT)
+    ).all()
+    orphans = [
+        HealthItem(id=str(row[0]), title=row[1], type=row[2]) for row in orphan_rows
     ]
 
-    unread = [
-        HealthItem(id=str(d.id), title=d.title, type=d.type)
-        for d in docs
-        if d.type in ("book", "pdf") and (d.read_progress or 0) <= 0
-    ][:50]
+    unread_rows = db.execute(
+        select(Document.id, Document.title, Document.type)
+        .where(alive, Document.type.in_(("book", "pdf")), Document.read_progress <= 0)
+        .order_by(Document.updated_at.desc())
+        .limit(_HEALTH_ITEM_LIMIT)
+    ).all()
+    unread = [HealthItem(id=str(row[0]), title=row[1], type=row[2]) for row in unread_rows]
+
+    titles = {
+        t.strip()
+        for (t,) in db.execute(select(Document.title).where(alive)).all()
+        if t and t.strip()
+    }
+
+    counter: Counter[str] = Counter()
+    offset = 0
+    while True:
+        rows = db.execute(
+            select(Document.id, Document.content)
+            .where(alive, Document.content.like("%[[%"))
+            .order_by(Document.id)  # 稳定排序，避免分页漂移
+            .offset(offset)
+            .limit(_HEALTH_SCAN_BATCH)
+        ).all()
+        if not rows:
+            break
+        for _doc_id, content in rows:
+            for mention in set(MENTION_PATTERN.findall(content or "")):
+                clean = mention.strip()
+                if clean and clean not in titles:
+                    counter[clean] += 1
+        offset += len(rows)
+
+    placeholders = [
+        PlaceholderMention(mention=name, count=count)
+        for name, count in counter.most_common(_HEALTH_ITEM_LIMIT)
+    ]
 
     return HealthOut(orphans=orphans, placeholders=placeholders, unread=unread)

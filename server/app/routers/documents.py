@@ -17,15 +17,14 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.orm import Session, defer, selectinload
 from starlette.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..database import SessionLocal, get_db
-from ..middleware.rate_limit import enforce_rate_limit
 from ..models import Collection, Document, DocumentTag, DocumentVersion, Link, Tag, utcnow
 from ..schemas import (
     DocumentCreate,
@@ -66,6 +65,99 @@ UPLOAD_FORMAT_WHITELIST = {"epub", "pdf", "mobi", "azw", "azw3", "txt", "md"}
 
 RANGE_PATTERN = re.compile(r"^bytes=(\d*)-(\d*)$")
 
+# 列表接口的规模上限：此前 limit 默认 None = 返回全表，调用方（书架/命令面板/双链补全）
+# 全部不带 limit，等于任何一次列表都要把整库的 content 读进内存。
+LIST_DEFAULT_LIMIT = 200
+LIST_HARD_LIMIT = 1000
+
+# 书架只认这两种 type：笔记（type=note）不进书架，也不计入书架统计
+BOOK_TYPES = ("book", "pdf")
+
+# 阅读状态分桶：与前端智能书架（在读/未读/读完）保持一致。
+# 未读含 read_progress 为 NULL 的旧数据；在修为 0 < p < 1；读完为 p >= 1。
+
+
+class LibraryStats(BaseModel):
+    """书架侧栏计数：一次聚合取全，避免前端为了算分类数量去拉整库列表"""
+
+    total: int
+    reading: int
+    unread: int
+    done: int
+    # key 为 collection_id；无分类的书籍单独记在 uncategorized
+    by_collection: dict[str, int]
+    uncategorized: int
+
+
+class CountOut(BaseModel):
+    count: int
+
+
+def apply_types_filter(stmt, types: str | None):
+    """types 支持逗号分隔（书架传 "book,pdf"），单值仍然兼容原有 type 参数"""
+    if not types:
+        return stmt
+    values = [v.strip() for v in types.split(",") if v.strip()]
+    if not values:
+        return stmt
+    return stmt.where(Document.type.in_(values))
+
+
+def apply_status_filter(stmt, status: str | None):
+    if not status or status == "all":
+        return stmt
+    if status == "reading":
+        return stmt.where(Document.read_progress > 0, Document.read_progress < 1)
+    if status == "unread":
+        return stmt.where(or_(Document.read_progress.is_(None), Document.read_progress <= 0))
+    if status == "done":
+        return stmt.where(Document.read_progress >= 1)
+    raise HTTPException(status_code=400, detail=f"不支持的 status: {status}")
+
+
+def apply_document_filters(
+    stmt,
+    *,
+    include_deleted: bool = False,
+    type: str | None = None,
+    types: str | None = None,
+    collection_id: uuid.UUID | None = None,
+    tag: str | None = None,
+    q: str | None = None,
+    author: str | None = None,
+    status: str | None = None,
+):
+    """列表与计数共用同一套过滤条件，避免两处条件漂移导致"显示 N 本、翻页却少几本"。"""
+    stmt = stmt.where(Document.deleted_at.is_(None) if not include_deleted else True)
+    stmt = apply_types_filter(stmt, types)
+    if type:
+        stmt = stmt.where(Document.type == type)
+    if collection_id:
+        stmt = stmt.where(Document.collection_id == collection_id)
+    if tag:
+        stmt = stmt.join(DocumentTag, DocumentTag.document_id == Document.id).join(
+            Tag, Tag.id == DocumentTag.tag_id
+        ).where(Tag.name == tag)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Document.title.ilike(like),
+                Document.author.ilike(like),
+                Document.description.ilike(like),
+                Document.content.ilike(like),
+            )
+        )
+    if author:
+        stmt = stmt.where(Document.author.ilike(f"%{author}%"))
+    return apply_status_filter(stmt, status)
+
+
+# Content-Disposition 的 ascii 回退名白名单：标题是用户可控字段，
+# 只剔双引号挡不住 \r\n（响应头注入，取决于 h11/uvicorn 是否拒绝控制字符：
+# 拒绝则 500，不拒绝则头注入，两种都不可接受），故按白名单逐字符收敛。
+_ASCII_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ -]")
+
 
 def file_download_headers(doc: Document, extra: dict | None = None) -> dict:
     """文件下载响应安全头：强制 attachment 下载 + 禁止 MIME 嗅探"""
@@ -73,8 +165,11 @@ def file_download_headers(doc: Document, extra: dict | None = None) -> dict:
 
     ext = doc.format or ""
     raw_name = f"{doc.title or 'document'}{'.' + ext if ext else ''}"
+    # filename*=UTF-8''... 里的 quote() 已把 CRLF 编码为 %0D%0A，那一段本身安全；
+    # 危险的是 ascii 回退名，必须白名单化。
     ascii_fallback = (
-        raw_name.encode("ascii", "ignore").decode("ascii").replace('"', "") or "document"
+        _ASCII_FILENAME_RE.sub("_", raw_name.encode("ascii", "ignore").decode("ascii")).strip()
+        or "document"
     )
     headers = {
         "Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(raw_name)}",
@@ -215,6 +310,10 @@ def get_doc_or_404(db: Session, doc_id: uuid.UUID, include_deleted: bool = False
 SUMMARY_PREVIEW_CHARS = 200
 
 
+# 摘要只需前 N 个字符（空白压平后取 SUMMARY_PREVIEW_CHARS 字），按此长度取前缀即可
+CONTENT_PREVIEW_FETCH_CHARS = SUMMARY_PREVIEW_CHARS * 4
+
+
 def summarize_content(content: str | None, limit: int = SUMMARY_PREVIEW_CHARS) -> str:
     """列表场景的正文摘要：压平空白后截断，避免大书库一次性传输全文"""
     plain = re.sub(r"\s+", " ", content or "").strip()
@@ -223,47 +322,123 @@ def summarize_content(content: str | None, limit: int = SUMMARY_PREVIEW_CHARS) -
     return plain[:limit] + "…"
 
 
-@router.get("", response_model=list[DocumentOut])
-def list_documents(
+@router.get("/stats", response_model=LibraryStats)
+def library_stats(db: Session = Depends(get_db)):
+    """书架侧栏计数：总数 / 智能书架分桶 / 各分类数量，全部按 type in (book, pdf) 统计"""
+    alive = [
+        Document.deleted_at.is_(None),
+        Document.type.in_(BOOK_TYPES),
+    ]
+
+    by_collection: dict[str, int] = {}
+    uncategorized = 0
+    for collection_id, count in db.execute(
+        select(Document.collection_id, func.count()).where(*alive).group_by(Document.collection_id)
+    ).all():
+        if collection_id is None:
+            uncategorized += count
+        else:
+            by_collection[str(collection_id)] = count
+
+    def count_where(*conditions) -> int:
+        return db.scalar(select(func.count()).select_from(Document).where(*alive, *conditions)) or 0
+
+    status_columns = (
+        count_where(Document.read_progress > 0, Document.read_progress < 1),
+        count_where(or_(Document.read_progress.is_(None), Document.read_progress <= 0)),
+        count_where(Document.read_progress >= 1),
+    )
+    total = sum(by_collection.values()) + uncategorized
+    return LibraryStats(
+        total=total,
+        reading=status_columns[0],
+        unread=status_columns[1],
+        done=status_columns[2],
+        by_collection=by_collection,
+        uncategorized=uncategorized,
+    )
+
+
+@router.get("/count", response_model=CountOut)
+def count_documents(
     type: str | None = None,
+    types: str | None = None,
     collection_id: uuid.UUID | None = None,
     tag: str | None = None,
     q: str | None = None,
+    author: str | None = None,
+    status: str | None = None,
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+):
+    """与列表同参的计数：书架用它显示"共 N 本"和剩余量，不必把整库拉下来数"""
+    stmt = apply_document_filters(
+        select(func.count()).select_from(Document),
+        include_deleted=include_deleted,
+        type=type,
+        types=types,
+        collection_id=collection_id,
+        tag=tag,
+        q=q,
+        author=author,
+        status=status,
+    )
+    return CountOut(count=db.scalar(stmt) or 0)
+
+
+@router.get("", response_model=list[DocumentOut])
+def list_documents(
+    type: str | None = None,
+    types: str | None = None,
+    collection_id: uuid.UUID | None = None,
+    tag: str | None = None,
+    q: str | None = None,
+    author: str | None = None,
+    status: str | None = None,
     include_deleted: bool = False,
     include_content: bool = False,
-    limit: int | None = Query(default=None, ge=1, le=500),
+    limit: int | None = Query(default=None, ge=1, le=LIST_HARD_LIMIT),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Document).options(selectinload(Document.tags)).where(
-        Document.deleted_at.is_(None) if not include_deleted else True
+    stmt = select(Document).options(selectinload(Document.tags))
+    if not include_content:
+        # 轻量模式下正文不进 ORM：每行数百 KB 的全文被读出是列表的主要内存开销
+        stmt = stmt.options(defer(Document.content))
+    stmt = apply_document_filters(
+        stmt,
+        include_deleted=include_deleted,
+        type=type,
+        types=types,
+        collection_id=collection_id,
+        tag=tag,
+        q=q,
+        author=author,
+        status=status,
     )
-    if type:
-        stmt = stmt.where(Document.type == type)
-    if collection_id:
-        stmt = stmt.where(Document.collection_id == collection_id)
-    if tag:
-        stmt = stmt.join(DocumentTag, DocumentTag.document_id == Document.id).join(
-            Tag, Tag.id == DocumentTag.tag_id
-        ).where(Tag.name == tag)
-    if q:
-        like = f"%{q}%"
-        stmt = stmt.where(
-            or_(
-                Document.title.ilike(like),
-                Document.author.ilike(like),
-                Document.description.ilike(like),
-                Document.content.ilike(like),
-            )
-        )
     stmt = stmt.order_by(Document.created_at.desc()).offset(offset)
-    if limit is not None:
-        stmt = stmt.limit(limit)
+    # 未显式传 limit 时按默认页大小截断；需要全量的调用方（书架等）显式传 limit=LIST_HARD_LIMIT
+    stmt = stmt.limit(limit if limit is not None else LIST_DEFAULT_LIMIT)
     docs = list(db.scalars(stmt))
     if not include_content:
-        # 轻量模式（默认）：content 只返回截断摘要；全文走 GET /documents/{id} 详情接口
+        # 轻量模式（默认）：content 只返回截断摘要；全文走 GET /documents/{id} 详情接口。
+        # 摘要只需开头若干字符，故单独一次批量查询取前缀，而不是把全文拉进内存。
+        # 注意顺序：必须先 expunge 再写回 content —— 在受管实例上改属性会被 autoflush
+        # 判定为用户修改，把 200 字摘要 UPDATE 回库，覆盖掉正文（不可逆）。
+        ids = [d.id for d in docs]
+        prefixes: dict = {}
+        if ids:
+            prefixes = dict(
+                db.execute(
+                    select(
+                        Document.id,
+                        func.substr(Document.content, 1, CONTENT_PREVIEW_FETCH_CHARS),
+                    ).where(Document.id.in_(ids))
+                ).all()
+            )
+        db.expunge_all()
         for d in docs:
-            d.content = summarize_content(d.content)
+            d.content = summarize_content(prefixes.get(d.id) or "")
     return docs
 
 
@@ -433,9 +608,10 @@ async def upload_document(
 
     SHA-256 / 元数据解析 / 正文提取均为秒级同步重活，必须经
     run_in_threadpool 下放线程池，否则会阻塞事件循环、冻结全站请求。
-    """
-    enforce_rate_limit(request, max_requests=50, window_seconds=60)
 
+    限流已由全局 RateLimitMiddleware 按路径处理（/api/documents/upload 50/60s），
+    此处不再手工调用 —— 否则同一请求计两次。
+    """
     max_bytes = settings.upload_max_size_mb * 1024 * 1024
 
     filename = file.filename or "unnamed"
@@ -561,6 +737,23 @@ def classify_ocr_background(doc_id: str, fmt: str, rel_path: str) -> None:
         logging.getLogger("kb.ocr_classify").warning("OCR 后台分类失败: %s", exc, exc_info=True)
 
 
+# Range 分段读取的分块大小：64KB 兼顾系统调用次数与内存占用
+FILE_CHUNK_SIZE = 64 * 1024
+
+
+def _iter_file_range(path: Path, start: int, length: int, chunk_size: int = FILE_CHUNK_SIZE):
+    """按 [start, start+length) 区间分块读文件，避免整段进内存。"""
+    remaining = length
+    with open(path, "rb") as f:
+        f.seek(start)
+        while remaining > 0:
+            chunk = f.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
 @router.get("/{doc_id}/file")
 def get_document_file(doc_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     """流式返回原始文件，支持 Range 分段请求（206）"""
@@ -601,11 +794,11 @@ def get_document_file(doc_id: uuid.UUID, request: Request, db: Session = Depends
                     headers={"Content-Range": f"bytes */{size}"},
                 )
             length = end - start + 1
-            with open(path, "rb") as f:
-                f.seek(start)
-                chunk = f.read(length)
-            return Response(
-                content=chunk,
+            # 分块流式返回：此前是 f.read(length) 一次性读入，bytes=0- 时 length 就是
+            # 整个文件大小（500MB 的 PDF 会整本进内存，两三个并发即打爆进程）。
+            # 非 Range 路径用的 FileResponse 本来就是流式的，这里对齐它的行为。
+            return StreamingResponse(
+                _iter_file_range(path, start, length),
                 status_code=206,
                 media_type=media_type,
                 headers=file_download_headers(

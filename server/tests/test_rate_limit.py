@@ -2,25 +2,37 @@
 
 此前限流为测试盲区：documents/clip 均启用了 enforce_rate_limit，
 但整个测试套件没有任何 429 断言。这里直接对中间件做单元级验证。
+
+2026-10-04 补充：限流改为全局中间件后，还要验证"非 TestClient 客户端真的被拦"
+—— 否则中间件注册了但被 bypass 逻辑放过，等于没做。
 """
 
+import json
 from collections import deque
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from app.middleware import rate_limit
-from app.middleware.rate_limit import enforce_rate_limit
+from app.middleware.rate_limit import (
+    HEAVY_POLICY,
+    READ_POLICY,
+    WRITE_POLICY,
+    RateLimitMiddleware,
+    _policy_for,
+    enforce_rate_limit,
+)
 
 
-def _request(path: str, host: str = "203.0.113.7") -> Request:
+def _request(path: str, host: str = "203.0.113.7", method: str = "GET") -> Request:
     scope = {
         "type": "http",
         "scheme": "http",
         "server": ("server", 80),
         "client": (host, 51234),
-        "method": "GET",
+        "method": method,
         "path": path,
         "headers": [],
         "query_string": b"",
@@ -85,3 +97,73 @@ def test_testclient_bypassed():
     req = _request("/z", host="testclient")
     for _ in range(10):
         enforce_rate_limit(req, max_requests=1, window_seconds=60)
+
+
+# ---------- 全局中间件（2026-10-04 新增） ----------
+
+def _dispatch(path: str, method: str = "GET", host: str = "203.0.113.7"):
+    """直接驱动中间件：host 用真实客户端地址，绕开 TestClient 的 bypass 分支。
+
+    （TestClient 无法自定义 client 地址，而 bypass 正是"中间件注册了却没生效"的
+    典型失效方式，所以这里必须在非 testclient 语义下验证。）
+    """
+    import asyncio
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    middleware = RateLimitMiddleware(lambda scope, receive, send: None)
+    return asyncio.run(
+        middleware.dispatch(_request(path, host=host, method=method), call_next)
+    )
+
+
+@pytest.fixture()
+def _clean():
+    rate_limit._BUCKETS.clear()
+    yield
+    rate_limit._BUCKETS.clear()
+
+
+def test_middleware_returns_429_for_heavy_path(_clean):
+    """真实客户端打重操作路径，超限必须返回 429 且带 Retry-After。"""
+    max_requests, window = HEAVY_POLICY
+    for _ in range(max_requests):
+        assert _dispatch("/api/stats").status_code == 200
+    resp = _dispatch("/api/stats")
+    assert resp.status_code == 429
+    assert json.loads(resp.body)["detail"] == "Rate limit exceeded"
+    assert resp.headers["retry-after"] == str(window)
+
+
+def test_middleware_does_not_limit_health_probe(_clean):
+    """/api/health 是容器探活端点，不能被限流。"""
+    for _ in range(50):
+        assert _dispatch("/api/health").status_code == 200
+
+
+def test_middleware_counters_are_independent_per_path(_clean):
+    max_requests, _window = HEAVY_POLICY
+    for _ in range(max_requests):
+        assert _dispatch("/api/stats").status_code == 200
+    assert _dispatch("/api/stats").status_code == 429
+    # 不同路径/方法各自独立计数：重操作桶打满不影响普通读与写
+    assert _dispatch("/api/documents", method="GET").status_code == 200
+    assert _dispatch("/api/documents", method="POST").status_code == 200
+
+
+def test_middleware_bypasses_testclient(_clean):
+    """testclient 放行必须保留：否则整个现有测试套件会被自己的限流打断。"""
+    for _ in range(50):
+        assert _dispatch("/api/stats", host="testclient").status_code == 200
+
+
+def test_policy_for_classifies_paths_and_methods():
+    assert _policy_for(_request("/api/health")) is None
+    assert _policy_for(_request("/api/search", method="GET")) == HEAVY_POLICY
+    assert _policy_for(_request("/api/backup")) == HEAVY_POLICY
+    assert _policy_for(_request("/api/export/markdown")) == HEAVY_POLICY
+    assert _policy_for(_request("/api/documents", method="GET")) == READ_POLICY
+    assert _policy_for(_request("/api/documents", method="POST")) == WRITE_POLICY
+    assert _policy_for(_request("/api/documents/upload", method="POST")) == (50, 60)
+    assert _policy_for(_request("/api/clip", method="POST")) == (10, 60)

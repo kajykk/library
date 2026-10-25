@@ -1036,13 +1036,20 @@ def test_collab_websocket_sync(client, auth_headers):
     # 冷启动恢复：从持久化存储回放更新到全新文档
     import time
 
-    time.sleep(0.3)  # 等待异步落盘完成
     from app.collab import _apply_stored_updates
     from app.config import get_settings
     from pathlib import Path
 
+    # 轮询等待落盘，而不是固定 sleep：协作库的落盘是异步的，机器负载高时
+    # 0.3s 不够（实测同一份代码在慢机器上会稳定失败，快机器上稳定通过 —— 典型 flaky）。
+    collab_db = Path(get_settings().data_dir) / "collab.db"
     doc_cold = Doc()
-    _apply_stored_updates(Path(get_settings().data_dir) / "collab.db", "doc-12345678", doc_cold)
+    for _ in range(50):
+        doc_cold = Doc()
+        _apply_stored_updates(collab_db, "doc-12345678", doc_cold)
+        if str(doc_cold.get("content", type=Text)) == "协作测试内容":
+            break
+        time.sleep(0.1)
     assert str(doc_cold.get("content", type=Text)) == "协作测试内容"
 
 
@@ -1194,13 +1201,15 @@ def test_clip(client, auth_headers, monkeypatch):
         def iter_bytes(self):
             yield self._body
 
-    import app.routers.clip as clip_module
+    # 抓取实现已统一到 url_safety.fetch_with_guard（clip 与封面下载共用），
+    # 因此 monkeypatch 的目标从 clip.httpx 改为 url_safety.httpx
+    import app.services.url_safety as url_safety_module
 
     @contextlib.contextmanager
     def fake_stream(method, url, **kwargs):
         yield FakeStreamResp()
 
-    monkeypatch.setattr(clip_module.httpx, "stream", fake_stream)
+    monkeypatch.setattr(url_safety_module.httpx, "stream", fake_stream)
 
     result = client.post(
         f"{API}/clip", headers=auth_headers, json={"url": "https://example.com/deep-work", "tags": ["方法论"]}
@@ -1407,3 +1416,138 @@ def test_backup_restore_size_limit(client, auth_headers, monkeypatch):
     )
     assert resp.status_code == 413
     assert "upload limit" in resp.text
+
+
+# ---------- 书架分页：types / status / author 过滤 + stats / count ----------
+
+def _upload_book(client, auth_headers, name, *, author=None, progress=None):
+    """书籍只能走上传创建（POST /documents 的 type 仅限 note/article/webclip）"""
+    fname, fh = _txt_file(name)
+    doc = client.post(
+        f"{API}/documents/upload", headers=auth_headers, files={"file": (fname, fh, "text/plain")}
+    ).json()
+    patch = {}
+    if author is not None:
+        patch["author"] = author
+    if progress is not None:
+        patch["read_progress"] = progress
+    if patch:
+        doc = client.patch(
+            f"{API}/documents/{doc['id']}", headers=auth_headers, json=patch
+        ).json()
+    return doc
+
+
+def test_documents_types_status_author_filters(client, auth_headers):
+    marker = _unique_marker()
+    unread = _upload_book(client, auth_headers, f"书架过滤未读{marker}.txt", author="作者甲乙", progress=0.0)
+    reading = _upload_book(client, auth_headers, f"书架过滤在读{marker}.txt", author="作者甲乙", progress=0.42)
+    done = _upload_book(client, auth_headers, f"书架过滤读完{marker}.txt", author="作者丙丁", progress=1.0)
+    # 笔记不应进书架
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": f"书架过滤笔记{marker}"},
+    )
+    listed = client.get(
+        f"{API}/documents", headers=auth_headers, params={"q": "书架过滤", "types": "book,pdf"}
+    ).json()
+    listed_ids = {r["id"] for r in listed}
+    assert {unread["id"], reading["id"], done["id"]} <= listed_ids
+    # 笔记被 types 过滤掉
+    assert all(r["type"] != "note" for r in listed)
+
+    by_status = lambda status: {
+        r["id"]
+        for r in client.get(
+            f"{API}/documents",
+            headers=auth_headers,
+            params={"q": "书架过滤", "types": "book,pdf", "status": status},
+        ).json()
+    }
+    assert unread["id"] in by_status("unread")
+    assert reading["id"] in by_status("reading")
+    assert done["id"] in by_status("done")
+    assert by_status("all") >= {unread["id"], reading["id"], done["id"]}
+
+    # 非法 status 明确报错，而不是静默忽略
+    assert (
+        client.get(
+            f"{API}/documents", headers=auth_headers, params={"status": "bogus"}
+        ).status_code
+        == 400
+    )
+
+    # author 模糊匹配：甲乙命中两本，丙丁不当命中
+    by_author = by_status("all") & {
+        r["id"]
+        for r in client.get(
+            f"{API}/documents",
+            headers=auth_headers,
+            params={"q": "书架过滤", "author": "甲乙"},
+        ).json()
+    }
+    assert {unread["id"], reading["id"]} <= by_author
+    assert done["id"] not in by_author
+
+
+def test_documents_count_matches_list(client, auth_headers):
+    marker = _unique_marker()
+    for i in range(4):
+        _upload_book(client, auth_headers, f"计数一致{marker}第{i}本.txt", progress=i / 4)
+
+    params = {"q": f"计数一致{marker}", "types": "book,pdf", "status": "unread"}
+    listed = client.get(f"{API}/documents", headers=auth_headers, params=params).json()
+    counted = client.get(f"{API}/documents/count", headers=auth_headers, params=params).json()
+    assert counted["count"] == len(listed) == 1
+
+
+def test_documents_count_beyond_single_page_limit(client, auth_headers):
+    """计数不受 LIST_HARD_LIMIT 截断：这正是书架少书的根因回归测试"""
+    from app.routers.documents import LIST_HARD_LIMIT
+
+    marker = _unique_marker()
+    titles = [f"超页上限{marker}第{i}本.txt" for i in range(5)]
+    for name in titles:
+        _upload_book(client, auth_headers, name)
+
+    counted = client.get(
+        f"{API}/documents/count", headers=auth_headers, params={"q": f"超页上限{marker}"}
+    ).json()
+    assert counted["count"] == len(titles)
+
+    # limit 超过硬上限直接 422（而不是静默夹到 1000，让调用方以为拿到了全量）
+    assert (
+        client.get(
+            f"{API}/documents",
+            headers=auth_headers,
+            params={"q": f"超页上限{marker}", "limit": LIST_HARD_LIMIT + 1},
+        ).status_code
+        == 422
+    )
+    page = client.get(
+        f"{API}/documents",
+        headers=auth_headers,
+        params={"q": f"超页上限{marker}", "limit": LIST_HARD_LIMIT, "offset": 0},
+    ).json()
+    assert len(page) == len(titles)
+
+
+def test_library_stats_endpoint(client, auth_headers):
+    marker = _unique_marker()
+    _upload_book(client, auth_headers, f"书架统计未读{marker}.txt", progress=0.0)
+    _upload_book(client, auth_headers, f"书架统计在读{marker}.txt", progress=0.5)
+    # 笔记不计入书架统计
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": f"书架统计笔记{marker}"},
+    )
+
+    stats = client.get(f"{API}/documents/stats", headers=auth_headers).json()
+    assert stats["reading"] >= 1
+    assert stats["unread"] >= 1
+    # 三个分桶互斥且覆盖全部书籍
+    assert stats["total"] == stats["reading"] + stats["unread"] + stats["done"]
+    # 分类计数（含未分类）之和应等于总数
+    assert sum(stats["by_collection"].values()) + stats["uncategorized"] == stats["total"]

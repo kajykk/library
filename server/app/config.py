@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     allow_local_clip: bool = False
     # 导入后后台 OCR 分类：扫描件（无可读文本）采样页 OCR 后再归类（较重，默认关闭）
     auto_classify_ocr: bool = False
+    # 全局限流开关：生产保持开启；e2e/压测时置 0（同一 IP 连续跑多个 spec 会被累计计数打断）
+    rate_limit_enabled: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:

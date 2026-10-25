@@ -25,14 +25,36 @@ TEXT_FORMATS = {"epub", "pdf", "txt", "md", "html", "mobi", "azw", "azw3"}
 
 # 共享有界线程池：此前每次 _bounded 新建单线程 executor，超时被遗弃的任务
 # （如 90s OCR）会随调用次数累积出大量游离线程。共享池复用线程并限制并发。
-_EXTRACT_POOL = concurrent.futures.ThreadPoolExecutor(
+#
+# 快/慢通道**分池**：此前两者共用一个 2 worker 的池，一个 90s 的 OCR 或两个卡住的
+# PDF 解析就会占满全部 worker，此后所有普通提取（含上传主流程）排队等待 —— 超时
+# 只是让调用方不再等，线程仍被占用。分池后慢任务无法饿死快任务。
+_FAST_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="kb-extract"
 )
+_SLOW_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="kb-extract-slow"
+)
+
+# 队列深度上限：积压超过此值时直接放弃本次提取，而不是无限排队（队头阻塞）。
+# 上传主流程宁可拿到空正文（后续可重索引），也不该让整个站点排队等待。
+MAX_QUEUE_DEPTH = 8
 
 
-def _bounded(fn, timeout: float = EXTRACT_TIMEOUT) -> str:
-    """共享线程池 + 时间预算执行提取；超时放弃该 future（任务线程自然结束），不阻塞后续文件。"""
-    future = _EXTRACT_POOL.submit(fn)
+def _bounded(fn, timeout: float = EXTRACT_TIMEOUT, slow: bool = False) -> str:
+    """共享线程池 + 时间预算执行提取；超时放弃该 future（任务线程自然结束），不阻塞后续文件。
+
+    slow=True 走独立慢池（OCR / 大 PDF），与快通道互不抢占。
+    """
+    pool = _SLOW_POOL if slow else _FAST_POOL
+    if pool._work_queue.qsize() >= MAX_QUEUE_DEPTH:  # noqa: SLF001 —— 需读内部队列深度
+        logger.warning(
+            "提取队列积压（%s 通道 ≥%s），本次跳过以避免队头阻塞",
+            "slow" if slow else "fast",
+            MAX_QUEUE_DEPTH,
+        )
+        return ""
+    future = pool.submit(fn)
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
@@ -240,5 +262,8 @@ def extract_text_from_file(fmt: str, path: Path) -> str:
             logger.info("假 PDF（头部不是 PDF 标记）按文本提取: %s", path)
             return _bounded(lambda: _read_text(path))
         if os.getenv("KB_ENABLE_OCR") == "1" and _ocr_available():
-            return _bounded(lambda: _extract_pdf(path, ocr=True), timeout=OCR_TIMEOUT)
+            # OCR 走慢池：90s 预算的任务不能再占用快通道的 worker
+            return _bounded(
+                lambda: _extract_pdf(path, ocr=True), timeout=OCR_TIMEOUT, slow=True
+            )
     return _bounded(lambda: _extract(fmt, path))

@@ -9,9 +9,13 @@ from urllib.parse import quote_plus
 
 import httpx
 
+from . import url_safety
+
 logger = logging.getLogger("kb.metadata_fetch")
 
 TIMEOUT_SECONDS = 8.0
+# 封面体积上限（流式读取时生效，不再先读完再判断）
+MAX_COVER_BYTES = 8 * 1024 * 1024
 
 GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 OPEN_LIBRARY_URL = "https://openlibrary.org/search.json"
@@ -102,16 +106,20 @@ def _search_open_library(query: str, limit: int) -> list[dict]:
 
 
 def download_cover(url: str) -> tuple[bytes, str]:
-    """下载封面图片，返回 (bytes, ext)。SSRF 校验由调用方完成。"""
-    with httpx.Client(timeout=TIMEOUT_SECONDS, follow_redirects=True) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        data = resp.content
+    """下载封面图片，返回 (bytes, ext)。
 
+    走 url_safety.fetch_with_guard：逐跳校验重定向目标 + 流式限制体积。
+    此前这里用 `follow_redirects=True`，而调用方只校验了初始 URL，
+    `302 → http://169.254.169.254/...` 可绕过 SSRF 防护。
+    """
+    # 纵深防御：调用方（documents 路由）已校验一次，此处再校验一遍不依赖调用顺序
+    url_safety.validate_url(url)
+    resp = url_safety.fetch_with_guard(
+        url, max_bytes=MAX_COVER_BYTES, timeout=TIMEOUT_SECONDS
+    )
+
+    content_type = resp.content_type or "image/jpeg"
     if not content_type.startswith("image/"):
         raise ValueError(f"Unexpected content type: {content_type}")
-    if len(data) > 8 * 1024 * 1024:
-        raise ValueError("Cover image exceeds 8 MB limit")
     ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
-    return data, ext
+    return resp.body, ext

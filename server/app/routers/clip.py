@@ -3,15 +3,13 @@
 import re
 import uuid
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends
 from lxml import html as lxml_html
 from pydantic import BaseModel
 from readability import Document as ReadabilityDoc
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..middleware.rate_limit import enforce_rate_limit
 from ..models import Document
 from ..services import file_storage, url_safety
 from .documents import _get_or_create_tag, sync_mention_links
@@ -20,7 +18,6 @@ router = APIRouter(prefix="/clip", tags=["clip"])
 
 UA = "Mozilla/5.0 (compatible; PersonalKnowledgeBase/0.1)"
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
-MAX_REDIRECTS = 5
 
 
 class ClipRequest(BaseModel):
@@ -37,63 +34,23 @@ class ClipResult(BaseModel):
 
 
 def _fetch_page_html(url: str) -> tuple[str, str]:
-    """手动逐跳跟随重定向：每跳都做 SSRF 校验，防止 302 跳内网；流式读取限制最大字节。
+    """抓取页面正文：SSRF 逐跳校验与体积上限统一由 url_safety.fetch_with_guard 负责。
 
-    返回 (page_html, final_url)；超过跳数/字节上限或不可达时抛 HTTPException。
+    返回 (page_html, final_url)。
     """
-    current_url = url
-    for hop in range(MAX_REDIRECTS + 1):
-        url_safety.validate_url(current_url)
-        try:
-            with httpx.stream(
-                "GET",
-                current_url,
-                timeout=httpx.Timeout(10.0),
-                headers={"User-Agent": UA},
-                follow_redirects=False,
-            ) as resp:
-                if 300 <= resp.status_code < 400:
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise HTTPException(
-                            status_code=502,
-                            detail=f"Redirect {resp.status_code} missing Location header",
-                        )
-                    if hop >= MAX_REDIRECTS:
-                        raise HTTPException(
-                            status_code=502,
-                            detail=f"Too many redirects (max {MAX_REDIRECTS})",
-                        )
-                    # 相对路径 Location 基于当前 URL 绝对化
-                    current_url = str(httpx.URL(str(resp.url)).join(location))
-                    continue
-
-                resp.raise_for_status()
-                buf = bytearray()
-                for chunk in resp.iter_bytes():
-                    if len(buf) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise HTTPException(
-                            status_code=413,
-                            detail="Remote response exceeds 5 MB limit",
-                        )
-                    buf.extend(chunk)
-                charset = resp.charset_encoding or "utf-8"
-                try:
-                    page_html = bytes(buf).decode(charset, errors="replace")
-                except LookupError:
-                    page_html = bytes(buf).decode("utf-8", errors="replace")
-                return page_html, str(resp.url)
-        except HTTPException:
-            raise
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"抓取失败：{exc}") from exc
-    raise HTTPException(status_code=502, detail=f"Too many redirects (max {MAX_REDIRECTS})")
+    resp = url_safety.fetch_with_guard(
+        url, max_bytes=MAX_RESPONSE_BYTES, headers={"User-Agent": UA}
+    )
+    charset = resp.charset or "utf-8"
+    try:
+        return resp.body.decode(charset, errors="replace"), resp.final_url
+    except LookupError:  # 响应声明了未知编码（如 x-mac-cyrillic）
+        return resp.body.decode("utf-8", errors="replace"), resp.final_url
 
 
 @router.post("", response_model=ClipResult, status_code=201)
-def create_clip(payload: ClipRequest, request: Request, db: Session = Depends(get_db)):
-    enforce_rate_limit(request, max_requests=10, window_seconds=60)
-
+def create_clip(payload: ClipRequest, db: Session = Depends(get_db)):
+    # 限流由全局 RateLimitMiddleware 按路径处理（/api/clip 10/60s），此处不重复计
     page_html, final_url = _fetch_page_html(payload.url)
 
     parsed = ReadabilityDoc(page_html)

@@ -10,7 +10,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -98,41 +98,61 @@ def _run(session_factory) -> None:
         _set(running=False, error=str(exc), finished_at=datetime.now(timezone.utc).isoformat())
 
 
+# 分页批大小：此前一次性 select(Document) 把全部待处理文档（含数百 KB 正文）
+# 载入内存。改为按批读取 + 批后 expunge，内存占用与批大小成正比而非与库大小成正比。
+_REINDEX_BATCH = 100
+
+
 def _do_run(db: Session) -> dict:
-    docs = db.scalars(
-        select(Document).where(
-            Document.deleted_at.is_(None),
-            Document.file_path.isnot(None),
-        )
-    ).all()
-    total = len(docs)
+    base_where = (
+        Document.deleted_at.is_(None),
+        Document.file_path.isnot(None),
+    )
+    total = db.scalar(
+        select(func.count()).select_from(Document).where(*base_where)
+    ) or 0
     _set(total=total)
     done = updated = skipped = empty = sha_backfilled = 0
-    for i, doc in enumerate(docs):
-        fmt = doc.format or ""
-        if fmt in content_extract.TEXT_FORMATS and not doc.content:
-            path = file_storage.abs_path(doc.file_path)
-            text = content_extract.extract_text_from_file(fmt, path)
-            if text and text != (doc.content or ""):
-                doc.content = text
-                updated += 1
+
+    offset = 0
+    while True:
+        docs = db.scalars(
+            select(Document)
+            .where(*base_where)
+            .order_by(Document.id)  # 稳定排序，分页不漂移
+            .offset(offset)
+            .limit(_REINDEX_BATCH)
+        ).all()
+        if not docs:
+            break
+        for doc in docs:
+            fmt = doc.format or ""
+            if fmt in content_extract.TEXT_FORMATS and not doc.content:
+                path = file_storage.abs_path(doc.file_path)
+                text = content_extract.extract_text_from_file(fmt, path)
+                if text and text != (doc.content or ""):
+                    doc.content = text
+                    updated += 1
+                else:
+                    empty += 1
             else:
-                empty += 1
-        else:
-            skipped += 1
+                skipped += 1
 
-        # 顺带为旧文档补齐内容哈希（去重用）
-        if not doc.sha256 and doc.file_path:
-            try:
-                doc.sha256 = file_storage.sha256_of(doc.file_path)
-                sha_backfilled += 1
-            except Exception:
-                pass
+            # 顺带为旧文档补齐内容哈希（去重用）
+            if not doc.sha256 and doc.file_path:
+                try:
+                    doc.sha256 = file_storage.sha256_of(doc.file_path)
+                    sha_backfilled += 1
+                except Exception:
+                    pass
 
-        done += 1
-        if done % 20 == 0:
-            _set(done=done, updated=updated, skipped=skipped, empty=empty, sha_backfilled=sha_backfilled)
-            db.commit()
+            done += 1
+        db.commit()
+        # 释放本批 ORM 对象（正文已写库，无需再驻留内存）
+        db.expunge_all()
+        offset += _REINDEX_BATCH
+        _set(done=done, updated=updated, skipped=skipped, empty=empty, sha_backfilled=sha_backfilled)
+
     db.commit()
     _set(done=done, updated=updated, skipped=skipped, empty=empty, sha_backfilled=sha_backfilled)
     return {

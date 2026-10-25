@@ -1,13 +1,27 @@
+import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import ANNOTATION_TYPES, DOCUMENT_TYPES, LINK_TYPES
 
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+# 标题会进入 Content-Disposition、邮件/导出文件名等头部与文本上下文，
+# 控制字符（尤其 \r\n）在这些位置是注入向量，写入时就地拒绝。
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_control_chars(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if _CONTROL_CHARS_RE.search(value):
+        raise ValueError(f"{field_name} 不能包含控制字符")
+    return value
 
 
 # ---------- Collections ----------
@@ -53,6 +67,11 @@ class DocumentCreate(BaseModel):
     format: str | None = None
     tags: list[str] = []
 
+    @field_validator("title")
+    @classmethod
+    def _title_no_control_chars(cls, v: str) -> str:
+        return _reject_control_chars(v, "title")  # type: ignore[return-value]
+
 
 class DocumentUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1)
@@ -68,6 +87,11 @@ class DocumentUpdate(BaseModel):
     position: dict | None = None
     last_read_at: datetime | None = None
     meta: dict | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title_no_control_chars(cls, v: str | None) -> str | None:
+        return _reject_control_chars(v, "title")
 
 
 class DocumentOut(ORMModel):
