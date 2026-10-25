@@ -57,6 +57,27 @@ def classify(title: str, author: str = "", extra: str = "") -> str | None:
     return None
 
 
+def score_rules(text: str) -> list[tuple[str, float]]:
+    """按 RULES 对文本打分，返回 [(分类, 分数)] 降序；分数为 0 的省略。
+
+    这是分类打分的唯一实现：classify_by_content 与 reclassify_fulltext.score_all
+    均调用此函数，避免公式在多处漂移。
+    """
+    low = text.lower()
+    out: list[tuple[str, float]] = []
+    for target, keywords in RULES:
+        score = 0
+        for kw in keywords:
+            if len(kw) < 2:
+                continue
+            n = low.count(kw)
+            if n:
+                score += n * (len(kw) * 2 if len(kw) >= 3 else 1)
+        if score > 0:
+            out.append((target, float(score)))
+    return sorted(out, key=lambda kv: kv[1], reverse=True)
+
+
 SCORE_THRESHOLD = 4
 MARGIN_FACTOR = 1.5
 
@@ -66,22 +87,14 @@ def classify_by_content(title: str, author: str, sample: str) -> str | None:
 
     要求：1) 最高分 ≥ SCORE_THRESHOLD；2) 最高分 ≥ 1.5×次高分（领先度兜底，
     防止小说/纪实中泛化词（对话、情绪、思想等）把书分错类）。
-    与宿主机脚本 server/reclassify_by_content.py 的 score_classify 保持一致。
+    打分公式唯一实现见 score_rules()。
     """
     text = f"{title} {author} {sample}".lower()
-    best, best_score, second = None, 0, 0
-    for target, keywords in RULES:
-        score = 0
-        for kw in keywords:
-            if len(kw) < 2:
-                continue
-            n = text.count(kw)
-            if n:
-                score += n * (len(kw) * 2 if len(kw) >= 3 else 1)
-        if score > best_score:
-            best, best_score, second = target, score, best_score
-        elif score > second:
-            second = score
+    scored = score_rules(text)
+    if not scored:
+        return None
+    best, best_score = scored[0]
+    second = scored[1][1] if len(scored) > 1 else 0.0
     if best_score >= SCORE_THRESHOLD and best_score >= MARGIN_FACTOR * second:
         return best
     return None

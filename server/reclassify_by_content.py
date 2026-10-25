@@ -15,7 +15,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
-from app.services.auto_classify import classify  # noqa: E402
+from app.services.auto_classify import classify, classify_by_content  # noqa: E402
 from app.services.metadata_extract import extract_metadata_from_file  # noqa: E402
 
 BASE = "http://127.0.0.1:8000/api"
@@ -29,7 +29,6 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 MAX_SAMPLE = 40000
-SCORE_THRESHOLD = 4
 
 
 def extract_text_sample(fmt: str, path: Path, max_chars: int = MAX_SAMPLE) -> str:
@@ -87,12 +86,6 @@ def extract_text_sample(fmt: str, path: Path, max_chars: int = MAX_SAMPLE) -> st
     return " ".join(out)
 
 
-def score_classify(title: str, author: str, sample: str) -> str | None:
-    """词频打分：正文样本中命中关键词越多、关键词越长越可信；需阈值+领先度，低于不归类"""
-    from app.services.auto_classify import classify_by_content
-    return classify_by_content(title, author, sample)
-
-
 def main():
     apply = "--apply" in sys.argv
     fulltext = "--fulltext" in sys.argv
@@ -124,7 +117,7 @@ def main():
             if fulltext:
                 sample = extract_text_sample(fmt, path)
                 extra = sample[:60]
-                target = score_classify(title, author, sample)
+                target = classify_by_content(title, author, sample)
             else:
                 extra = meta.get("description") or ""
                 target = classify(title, author, extra)
