@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -36,9 +37,13 @@ _SLOW_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="kb-extract-slow"
 )
 
-# 队列深度上限：积压超过此值时直接放弃本次提取，而不是无限排队（队头阻塞）。
-# 上传主流程宁可拿到空正文（后续可重索引），也不该让整个站点排队等待。
-MAX_QUEUE_DEPTH = 8
+# 连续超时熔断：连续 N 次超时后该通道短期停用，让被放弃但仍占着 worker 的
+# 任务有机会排空。冷却后放行一次探测；成功即清零，避免通道被永久禁用
+# （旧实现按队列深度直接跳过，持续调用会让后续文件全部返回空）。
+_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_COOLDOWN = 60.0
+_consecutive_timeouts = {"fast": 0, "slow": 0}
+_circuit_open_until = {"fast": 0.0, "slow": 0.0}
 
 
 def _bounded(fn, timeout: float = EXTRACT_TIMEOUT, slow: bool = False) -> str:
@@ -47,21 +52,36 @@ def _bounded(fn, timeout: float = EXTRACT_TIMEOUT, slow: bool = False) -> str:
     slow=True 走独立慢池（OCR / 大 PDF），与快通道互不抢占。
     """
     pool = _SLOW_POOL if slow else _FAST_POOL
-    if pool._work_queue.qsize() >= MAX_QUEUE_DEPTH:  # noqa: SLF001 —— 需读内部队列深度
-        logger.warning(
-            "提取队列积压（%s 通道 ≥%s），本次跳过以避免队头阻塞",
-            "slow" if slow else "fast",
-            MAX_QUEUE_DEPTH,
-        )
-        return ""
+    channel = "slow" if slow else "fast"
+
+    now = time.monotonic()
+    if _consecutive_timeouts[channel] >= _CIRCUIT_BREAKER_THRESHOLD:
+        if now < _circuit_open_until[channel]:
+            logger.warning(
+                "提取熔断器触发（%s 通道连续 %s 次超时），跳过本次提取",
+                channel,
+                _consecutive_timeouts[channel],
+            )
+            return ""
+        # 冷却结束：放行一次探测；探测仍超时会重新打开熔断
+        _circuit_open_until[channel] = now + _CIRCUIT_BREAKER_COOLDOWN
+
     future = pool.submit(fn)
     try:
-        return future.result(timeout=timeout)
+        result = future.result(timeout=timeout)
+        _consecutive_timeouts[channel] = 0
+        _circuit_open_until[channel] = 0.0
+        return result
     except concurrent.futures.TimeoutError:
         logger.warning("正文提取超时（>%ss），已跳过", timeout)
+        _consecutive_timeouts[channel] += 1
+        if _consecutive_timeouts[channel] >= _CIRCUIT_BREAKER_THRESHOLD:
+            _circuit_open_until[channel] = time.monotonic() + _CIRCUIT_BREAKER_COOLDOWN
         return ""
     except Exception as exc:
         logger.warning("正文提取失败: %s", exc, exc_info=True)
+        _consecutive_timeouts[channel] = 0
+        _circuit_open_until[channel] = 0.0
         return ""
 
 
