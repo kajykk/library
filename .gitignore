@@ -36,6 +36,8 @@ server/.env
 server/*.db
 server/*.db-shm
 server/*.db-wal
+# P3 修复脚本自动备份（knowledge_base.db.bak.<ts>，含 -wal/-shm）
+server/*.db.bak.*
 server/data/
 server/e2e-*/
 .venv/
