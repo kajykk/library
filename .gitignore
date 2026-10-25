@@ -28,6 +28,9 @@ npm-debug.log*
 # python / server 运行时产物
 __pycache__/
 *.pyc
+
+# 爬虫产物与登录凭证
+/data/
 .pytest_cache/
 server/.env
 server/*.db
@@ -48,7 +51,10 @@ server/restore_ts.py
 # 调试/探查数据
 server/probe-data/
 console/
-docs/
+# docs/ 下混有截图等二进制，默认忽略；但 Markdown 文档（含代码审查报告）需入库。
+# 注意：写成 `docs/` 会连目录一起排除，此时 `!docs/*.md` 不再生效，故用 `docs/*`。
+docs/*
+!docs/*.md
 
 # playwright
 node_modules/.cache/
@@ -57,3 +63,22 @@ playwright-report/
 coverage/
 e2e/fixtures/*.epub
 e2e/fixtures/*.md
+
+# 一次性调试产物（页面结构探查的本地 dump，非源码）
+page_probe.html
+
+# 个人素材 / 本地 AI 工作目录（仅保留在本地）
+.workbuddy/
+generated-images/
+
+# 一次性爬虫/数据整理脚本（保留运维脚本）
+scripts/*
+!scripts/backup.ps1
+!scripts/healthcheck.ps1
+
+# server 一次性导入/修复脚本与数据 dump（audit_db.py 已跟踪，不受影响）
+server/check_lib.py
+server/import_run.py
+server/import_todo.txt
+server/predup.py
+server/scripts/

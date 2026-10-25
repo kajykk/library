@@ -42,10 +42,12 @@ services:
       context: .
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-        NEXT_PUBLIC_API_TOKEN: ${KB_API_TOKEN:-change-me}
     restart: unless-stopped
     # 注意：NEXT_PUBLIC_* 为构建期内联变量，运行时 environment 注入无效；
     # 如需变更请修改 build.args 后重新 build。
+    # 安全约束：不要把 KB_API_TOKEN 传进 build.args —— 它会被内联进客户端 bundle，
+    # 任何人 view-source 即可拿到全站写权限。Token 在运行时由设置页写入浏览器
+    # localStorage（见 src/app/settings/page.tsx）。
     ports:
       - "3000:3000"
     depends_on:

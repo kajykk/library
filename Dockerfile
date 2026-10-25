@@ -5,14 +5,15 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # ---- 构建阶段：NEXT_PUBLIC_* 在此内联进产物（运行时注入无效）----
+# 安全约束：只有 NEXT_PUBLIC_API_URL 允许走构建期变量。
+# NEXT_PUBLIC_* 会被内联进客户端 JS bundle，任何以它命名的密钥都等于公开发布；
+# API Token 必须走运行时路径（设置页写入 localStorage，见 src/lib/api/client.ts）。
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
-ARG NEXT_PUBLIC_API_TOKEN=change-me
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
-    NEXT_PUBLIC_API_TOKEN=$NEXT_PUBLIC_API_TOKEN \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

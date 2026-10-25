@@ -36,6 +36,8 @@ export default defineConfig({
         KB_CORS_ORIGINS: `http://localhost:${FRONTEND_PORT}`,
         // 仅 e2e：允许剪藏本机地址（SSRF 防护默认开启）
         KB_ALLOW_LOCAL_CLIP: '1',
+        // 仅 e2e：关闭全局限流。所有 spec 共享同一来源 IP，累计计数会打断正常流程
+        KB_RATE_LIMIT_ENABLED: '0',
       },
     },
     {
