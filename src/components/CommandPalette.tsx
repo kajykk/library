@@ -141,7 +141,7 @@ export default function CommandPalette({ initialOpen = false }: { initialOpen?: 
                 type: 'note',
                 include_content: 'false',
               });
-              const target = docs.find((d) => (d.meta as { workflow?: string })?.workflow === 'inbox') || docs[0];
+              const target = docs.find((d) => d.meta?.workflow === 'inbox') || docs[0];
               if (target) router.push(`/notes?open=${target.id}`);
             },
           },

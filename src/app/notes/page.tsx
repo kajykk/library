@@ -110,7 +110,7 @@ function NotesPageInner() {
   const visibleNotes = useMemo(() => {
     const q = listSearch.trim().toLowerCase();
     return notes.filter((n) => {
-      const matchesWorkflow = workflowFilter === 'all' || ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') === workflowFilter;
+      const matchesWorkflow = workflowFilter === 'all' || (n.meta?.workflow || 'inbox') === workflowFilter;
       if (!matchesWorkflow) return false;
       if (!q) return true;
       return (
@@ -128,7 +128,7 @@ function NotesPageInner() {
       done: 0,
     };
     notes.forEach((n) => {
-      const raw = (n.meta as { workflow?: string } | undefined)?.workflow || 'inbox';
+      const raw = n.meta?.workflow || 'inbox';
       // meta.workflow 是用户可写的任意字符串（后端 dict 无约束），`as` 断言只在编译期生效。
       // 此前遇到 'archived' 这类值会得到 counts['archived'] === undefined，NaN += 1 传播到 UI。
       const wf = (['inbox', 'review', 'done'] as const).includes(raw as 'inbox' | 'review' | 'done')
@@ -139,7 +139,7 @@ function NotesPageInner() {
     return counts;
   }, [notes]);
 
-  const inboxCandidates = useMemo(() => notes.filter((n) => ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') === 'inbox'), [notes]);
+  const inboxCandidates = useMemo(() => notes.filter((n) => (n.meta?.workflow || 'inbox') === 'inbox'), [notes]);
 
   const rowVirtualizer = useVirtualizer({
     count: listType === 'note' ? visibleNotes.length : 0,
@@ -634,7 +634,7 @@ function NotesPageInner() {
                     {clip.source_url}
                   </a>
                   <p className="text-sm text-gray-400 mt-1 truncate">
-                    {(clip.meta as { excerpt?: string })?.excerpt || (clip.content || '').slice(0, 100)}
+                    {clip.meta?.excerpt || (clip.content || '').slice(0, 100)}
                   </p>
                   <span className="text-xs text-gray-400 mt-2 block">
                     {new Date(clip.created_at).toLocaleString('zh-CN')}

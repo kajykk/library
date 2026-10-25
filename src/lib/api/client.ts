@@ -4,6 +4,8 @@
  * Token 只取 localStorage —— 见下方 getApiToken 的安全说明。
  */
 
+import type { DocMeta } from '@/lib/types/meta';
+
 export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const stored = window.localStorage.getItem('kb_api_base');
@@ -117,7 +119,7 @@ export interface ApiDocument {
   file_size: number;
   format: string | null;
   content: string;
-  meta: Record<string, unknown>;
+  meta: DocMeta;
   collection_id: string | null;
   read_progress: number;
   position: Record<string, unknown> | null;
@@ -149,7 +151,7 @@ export interface DocumentPatch {
   read_progress?: number;
   position?: Record<string, unknown> | null;
   last_read_at?: string;
-  meta?: Record<string, unknown>;
+  meta?: DocMeta;
 }
 
 export interface DocumentInsight {

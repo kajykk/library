@@ -456,7 +456,7 @@ function NoteEditorView({
   };
 
   const [workflowState, setWorkflowState] = useState<string>(
-    (note.meta as { workflow?: string } | undefined)?.workflow || 'inbox',
+    (note.meta?.workflow || 'inbox'),
   );
 
   const updateWorkflow = async (workflow: 'inbox' | 'review' | 'done') => {
