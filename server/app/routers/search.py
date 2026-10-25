@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Document
 from ..services.search_index import fts_available
+from ..services.sql_utils import escape_like
 from .documents import extract_keywords
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -111,7 +112,7 @@ def _search_ilike(db: Session, q: str, doc_type: str | None, limit: int) -> list
     terms = [t for t in q.split() if t]
 
     def any_field(field, ts: list[str]):
-        return or_(*[field.ilike(f"%{t}%") for t in ts])
+        return or_(*[field.ilike(f"%{escape_like(t)}%", escape="\\") for t in ts])
 
     stmt = select(Document).where(Document.deleted_at.is_(None)).limit(limit)
     if doc_type:
@@ -305,7 +306,11 @@ def search_summary(
 
 def _ilike_stats(db: Session, q: str, terms: list[str], doc_type: str | None):
     def any_field(field):
-        return or_(*[field.ilike(f"%{t}%") for t in terms]) if terms else false()
+        return (
+            or_(*[field.ilike(f"%{escape_like(t)}%", escape="\\") for t in terms])
+            if terms
+            else false()
+        )
 
     cond = or_(
         any_field(Document.title),

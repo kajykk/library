@@ -44,6 +44,7 @@ from ..services import (
     reindex_job,
     url_safety,
 )
+from ..services.sql_utils import escape_like
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -139,17 +140,17 @@ def apply_document_filters(
             Tag, Tag.id == DocumentTag.tag_id
         ).where(Tag.name == tag)
     if q:
-        like = f"%{q}%"
+        like = f"%{escape_like(q)}%"
         stmt = stmt.where(
             or_(
-                Document.title.ilike(like),
-                Document.author.ilike(like),
-                Document.description.ilike(like),
-                Document.content.ilike(like),
+                Document.title.ilike(like, escape="\\"),
+                Document.author.ilike(like, escape="\\"),
+                Document.description.ilike(like, escape="\\"),
+                Document.content.ilike(like, escape="\\"),
             )
         )
     if author:
-        stmt = stmt.where(Document.author.ilike(f"%{author}%"))
+        stmt = stmt.where(Document.author.ilike(f"%{escape_like(author)}%", escape="\\"))
     return apply_status_filter(stmt, status)
 
 
@@ -498,7 +499,7 @@ def update_document(doc_id: uuid.UUID, payload: DocumentUpdate, db: Session = De
             select(Document).where(
                 Document.deleted_at.is_(None),
                 Document.id != doc.id,
-                Document.content.ilike(f"%{old_ref}%"),
+                Document.content.ilike(f"%{escape_like(old_ref)}%", escape="\\"),
             )
         ).all()
         for ref in refs:
@@ -551,7 +552,7 @@ def get_unlinked_mentions(doc_id: uuid.UUID, db: Session = Depends(get_db)):
         .where(
             Document.deleted_at.is_(None),
             Document.id != doc.id,
-            Document.content.ilike(f"%{title}%"),
+            Document.content.ilike(f"%{escape_like(title)}%", escape="\\"),
         )
         .order_by(Document.updated_at.desc())
         .limit(50)

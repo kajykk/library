@@ -300,3 +300,28 @@ def test_list_documents_still_returns_summary_and_detail_full_text(client, auth_
 
     detail = client.get(f"{API}/documents/{created['id']}", headers=auth_headers).json()
     assert detail["content"] == body["content"]
+
+
+def test_list_documents_escapes_like_wildcards(client, auth_headers):
+    """查询含 % / _ 时，必须按字面匹配，不能退化为通配符放大扫描。"""
+    marker = f"通配{uuid.uuid4().hex[:6]}"
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": f"{marker}%版"},
+    )
+    client.post(
+        f"{API}/documents",
+        headers=auth_headers,
+        json={"type": "note", "title": f"{marker}_版"},
+    )
+
+    resp = client.get(f"{API}/documents", headers=auth_headers, params={"q": f"{marker}%"})
+    titles = [d["title"] for d in resp.json()]
+    assert f"{marker}%版" in titles
+    assert f"{marker}_版" not in titles
+
+    resp = client.get(f"{API}/documents", headers=auth_headers, params={"q": f"{marker}_"})
+    titles = [d["title"] for d in resp.json()]
+    assert f"{marker}_版" in titles
+    assert f"{marker}%版" not in titles

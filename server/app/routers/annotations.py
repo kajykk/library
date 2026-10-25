@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Annotation, Document
 from ..schemas import AnnotationCreate, AnnotationOut, AnnotationUpdate, DocumentOut
+from ..services.sql_utils import escape_like
 from .documents import _snapshot_version, sync_mention_links
 
 router = APIRouter(prefix="/annotations", tags=["annotations"])
@@ -49,9 +50,12 @@ def search_annotations(
     )
     query = q.strip()
     if query:
-        like = f"%{query}%"
+        like = f"%{escape_like(query)}%"
         stmt = stmt.where(
-            or_(Annotation.quote.ilike(like), Annotation.content.ilike(like))
+            or_(
+                Annotation.quote.ilike(like, escape="\\"),
+                Annotation.content.ilike(like, escape="\\"),
+            )
         )
     rows = db.execute(stmt).all()
     return [
