@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ApiDocument, Backlink, getBacklinks, getUnlinkedMentions, listDocuments } from '@/lib/api/client';
+import { ApiDocument, Backlink, getBacklinks, getUnlinkedMentions, listAllDocuments } from '@/lib/api/client';
 
 export interface SuggestedLink {
   id: string;
@@ -31,7 +31,8 @@ export function useNoteRelations(noteId: string, noteTitle: string): {
 
   useEffect(() => {
     let cancelled = false;
-    listDocuments({ include_content: 'false' })
+    // [[双链]] 候选必须覆盖全库标题：翻页取全量，避免 1000 条硬上限漏掉旧书
+    listAllDocuments({ include_content: 'false' })
       .then((items) => {
         if (!cancelled) setDocs(items);
       })

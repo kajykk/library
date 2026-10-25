@@ -32,11 +32,13 @@ import {
   getFileArrayBuffer as localGetFileArrayBuffer,
 } from './fileStorage';
 import {
+  ApiError,
   ApiAnnotation,
   ApiCollection,
   ApiDocument,
   annotationToNote,
   checkHealth,
+  countDocuments,
   createAnnotationApi,
   createCollection,
   createReadingRecord,
@@ -47,6 +49,7 @@ import {
   fetchDocumentFileArrayBuffer,
   getApiToken,
   getDocument,
+  getLibraryStats,
   listAnnotationsApi,
   listCollections,
   listDocuments,
@@ -94,8 +97,6 @@ export async function resolveMode(force = false): Promise<DataSourceMode> {
 
 // ---------- 映射 ----------
 
-const BOOK_TYPES = new Set(['book', 'pdf']);
-
 function apiDocToBook(doc: ApiDocument, collectionNames: Map<string, string>): Book {
   const meta = (doc.meta || {}) as { totalPages?: number };
   const position = (doc.position || null) as { page?: number } | null;
@@ -127,32 +128,181 @@ function apiCollectionToCategory(c: ApiCollection): Category {
 
 // ---------- 查询 ----------
 
-export interface LibraryData {
-  books: Book[];
-  categories: Category[];
-  mode: DataSourceMode;
+/** 书架筛选项（与页面智能书架一致） */
+export type ShelfFilter = 'all' | 'reading' | 'unread' | 'done' | 'recent';
+
+export interface LibraryPageQuery {
+  offset: number;
+  limit: number;
+  search?: string;
+  /** 分类名（页面按名字选分类，API 侧再解析成 collection_id） */
+  category?: string | null;
+  author?: string | null;
+  shelf?: ShelfFilter;
 }
 
-export async function loadLibrary(): Promise<LibraryData> {
+export interface LibraryPage {
+  books: Book[];
+  hasMore: boolean;
+  /** 当前筛选条件下的总数；分类名在后端不存在时为 0 */
+  total: number;
+}
+
+export interface LibraryMeta {
+  categories: Category[];
+  mode: DataSourceMode;
+  /** 书架总册数（只算 book/pdf） */
+  total: number;
+  shelfCounts: { all: number; reading: number; unread: number; done: number; recent: number };
+  /** key = 分类名，与 Category.name / Book.category 对齐 */
+  categoryCounts: Map<string, number>;
+  /** API 模式下本地仍有未迁移书籍时为其数量，用于提示 */
+  migrationHint: number;
+}
+
+const BOOK_TYPES = ['book', 'pdf'];
+const UNCATEGORIZED = '未分类';
+
+/** 阅读状态分桶：与后端 documents.apply_status_filter 保持一致 */
+function bookStatus(book: Book): 'reading' | 'unread' | 'done' {
+  const progress = book.readProgress ?? 0;
+  if (progress >= 100) return 'done';
+  if (progress > 0) return 'reading';
+  return 'unread';
+}
+
+function matchesLocalFilters(book: Book, query: LibraryPageQuery): boolean {
+  const normalizedQuery = (query.search || '').trim().toLowerCase();
+  if (normalizedQuery) {
+    const searchable = [book.title, book.author, book.publisher, book.description]
+      .join(' ')
+      .toLowerCase();
+    if (!searchable.includes(normalizedQuery)) return false;
+  }
+  if (query.category && book.category !== query.category) return false;
+  if (query.author && !(book.author || '').includes(query.author)) return false;
+  if (query.shelf && query.shelf !== 'all') {
+    if (query.shelf === 'recent') return true; // 由调用方先截取最新 N 本
+    if (bookStatus(book) !== query.shelf) return false;
+  }
+  return true;
+}
+
+export async function loadLibraryMeta(): Promise<LibraryMeta> {
   const mode = await resolveMode();
+
   if (mode === 'local') {
     await initDB();
     const [books, categories] = await Promise.all([getBooks(), getCategories()]);
-    return { books, categories, mode };
+    const counts = { all: books.length, reading: 0, unread: 0, done: 0, recent: 0 };
+    const categoryCounts = new Map<string, number>();
+    books.forEach((b) => {
+      counts[bookStatus(b)] += 1;
+      categoryCounts.set(b.category, (categoryCounts.get(b.category) || 0) + 1);
+    });
+    return {
+      categories,
+      mode,
+      total: books.length,
+      shelfCounts: counts,
+      categoryCounts,
+      migrationHint: 0,
+    };
   }
 
   // 后端恢复可用时，重放离线期间积压的写操作
   flushPendingWrites().catch((err) => console.warn('重放离线队列失败:', err));
 
-  // 轻量模式：列表只取元数据+正文摘要，编辑/阅读时再按 id 拉 detail 全文
-  const [docs, collections] = await Promise.all([
-    listDocuments({ include_content: 'false' }),
+  const [collections, stats, localBooks] = await Promise.all([
     listCollections(),
+    getLibraryStats(),
+    countLocalBooks(),
   ]);
   const nameById = new Map(collections.map((c) => [c.id, c.name]));
-  const books = docs.filter((d) => BOOK_TYPES.has(d.type)).map((d) => apiDocToBook(d, nameById));
-  const categories = collections.map(apiCollectionToCategory);
-  return { books, categories, mode };
+  const categoryCounts = new Map<string, number>();
+  for (const [collectionId, count] of Object.entries(stats.by_collection)) {
+    const name = nameById.get(collectionId);
+    if (!name) continue;
+    categoryCounts.set(name, count);
+  }
+  if (stats.uncategorized > 0) {
+    categoryCounts.set(UNCATEGORIZED, stats.uncategorized);
+  }
+  return {
+    categories: collections.map(apiCollectionToCategory),
+    mode,
+    total: stats.total,
+    shelfCounts: {
+      all: stats.total,
+      reading: stats.reading,
+      unread: stats.unread,
+      done: stats.done,
+      recent: 0, // 由页面按 total 与 RECENT_SHELF_SIZE 计算
+    },
+    categoryCounts,
+    migrationHint: stats.total === 0 ? localBooks : 0,
+  };
+}
+
+/** 分页取书架：API 模式把筛选条件下推到后端（offset/limit），本地模式在内存里过滤后切片 */
+export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryPage> {
+  const mode = await resolveMode();
+
+  if (mode === 'local') {
+    await initDB();
+    const all = (await getBooks()).sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0));
+    const base = query.shelf === 'recent' ? all.slice(0, query.limit) : all;
+    const filtered = base.filter((book) => matchesLocalFilters(book, query));
+    const slice = filtered.slice(query.offset, query.offset + query.limit);
+    return {
+      books: slice,
+      hasMore: query.offset + slice.length < filtered.length,
+      total: filtered.length,
+    };
+  }
+
+  const category = query.category;
+  let collectionId: string | null = null;
+  if (category) {
+    const collections = await listCollections();
+    const found = collections.find((c) => c.name === category);
+    // 分类名在后端不存在（已删除/改名的旧状态）：直接给空结果，避免退化成"全部书籍"
+    if (!found) return { books: [], hasMore: false, total: 0 };
+    collectionId = found.id;
+  }
+
+  const params: Record<string, string> = {
+    types: BOOK_TYPES.join(','),
+    include_content: 'false',
+    limit: String(query.limit),
+    offset: String(query.offset),
+  };
+  if (collectionId) params.collection_id = collectionId;
+  // 最近添加 = 按 created_at 倒序的第一页，不需要额外条件
+  if (query.shelf && query.shelf !== 'all' && query.shelf !== 'recent') {
+    params.status = query.shelf;
+  }
+  if (query.search?.trim()) params.q = query.search.trim();
+  if (query.author) params.author = query.author;
+
+  const [docs, total] = await Promise.all([
+    listDocuments(params),
+    countDocuments(params),
+  ]);
+  const nameById = await getCollectionNames();
+  // 最近添加是一次性视图：只取第一页，总数即本页条数
+  if (query.shelf === 'recent') {
+    return {
+      books: docs.map((d) => apiDocToBook(d, nameById)),
+      hasMore: false,
+      total: Math.min(query.limit, total),
+    };
+  }
+  return {
+    books: docs.map((d) => apiDocToBook(d, nameById)),
+    hasMore: query.offset + docs.length < total,
+    total,
+  };
 }
 
 // ---------- 离线写队列 ----------
@@ -368,7 +518,10 @@ export async function addCategoryByName(name: string): Promise<Category> {
       invalidateCollectionCache();
       return apiCollectionToCategory(created);
     } catch (err) {
-      throw new Error((err as Error).message.includes('409') ? `分类"${name}"已存在` : (err as Error).message);
+      // 按状态码判断：此前用 message.includes('409') 是死分支 —— Error 只带 detail 文本，
+      // 字符串里不会出现状态码，用户看到的永远是英文原文
+      const status = err instanceof ApiError ? err.status : undefined;
+      throw new Error(status === 409 ? `分类"${name}"已存在` : (err as Error).message);
     }
   }
   await initDB();

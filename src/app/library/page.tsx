@@ -2,16 +2,16 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { Book, Category, exportData, importData } from '@/lib/db';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  loadLibrary,
+  loadLibraryMeta,
+  loadLibraryPage,
   importBookFile,
   deleteBookCompletely,
   addCategoryByName,
   deleteCategoryAndReset,
   getBookCoverUrl,
-  countLocalBooks,
-  DataSourceMode,
+  ShelfFilter,
 } from '@/lib/dataSource';
 import { formatFileSize, formatDate } from '@/lib/utils';
 import {
@@ -59,12 +59,9 @@ const SHELF_LABELS: Record<ShelfKey, string> = {
   recent: '最近添加',
 };
 
-interface LibrarySnapshot {
-  books: Book[];
-  categories: Category[];
-  mode: DataSourceMode;
-  migrationHint: number;
-}
+// 书架每次向后端取 60 本（而不是先拉整库再前端切片），滚动到底再取下一页
+const PAGE_STEP = 60;
+const LIBRARY_META_QUERY_KEY = [...LIBRARY_QUERY_KEY, 'meta'] as const;
 
 function LibraryPageInner() {
   const router = useRouter();
@@ -73,6 +70,8 @@ function LibraryPageInner() {
   const dialog = useDialog();
   const toast = useToast();
   const authorFilter = searchParams.get('author') || '';
+  // 搜索走服务端 q 参数：输入即打请求会刷屏，故 300ms 防抖后再改查询键
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -95,29 +94,74 @@ function LibraryPageInner() {
     startedAt: number;
     finishedAt: number | null;
   } | null>(null);
-  // 大书库增量渲染：先渲染前 60 本，滚动到底点击"加载更多"
-  const PAGE_STEP = 60;
-  const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
-  // 书架快照走 react-query：变更后 invalidateQueries 增量刷新，替代手动 loadData 全量 setState
-  const libraryQuery = useQuery({
-    queryKey: LIBRARY_QUERY_KEY,
-    queryFn: async (): Promise<LibrarySnapshot> => {
-      const { books, categories, mode } = await loadLibrary();
-      return {
-        books,
-        categories,
-        mode,
-        migrationHint: mode === 'api' && books.length === 0 ? await countLocalBooks() : 0,
-      };
-    },
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // 侧栏（分类/智能书架计数）走一次性聚合：不随分页变化
+  const metaQuery = useQuery({
+    queryKey: LIBRARY_META_QUERY_KEY,
+    queryFn: loadLibraryMeta,
   });
-  const books = libraryQuery.data?.books ?? [];
-  const categories = libraryQuery.data?.categories ?? [];
-  const dataMode = libraryQuery.data?.mode ?? 'local';
-  const migrationHint = libraryQuery.data?.migrationHint ?? 0;
-  const isLoading = libraryQuery.isLoading;
+  const categories = metaQuery.data?.categories ?? [];
+  const dataMode = metaQuery.data?.mode ?? 'local';
+  const migrationHint = metaQuery.data?.migrationHint ?? 0;
+
+  // 书目列表按需分页：筛选条件全部下推到后端，翻页用 offset，书架不再受单页上限截断
+  const pageSize = activeShelf === 'recent' ? RECENT_SHELF_SIZE : PAGE_STEP;
+  const booksQuery = useInfiniteQuery({
+    queryKey: [...LIBRARY_QUERY_KEY, 'page', searchQuery, selectedCategory, authorFilter, activeShelf],
+    queryFn: ({ pageParam }) =>
+      loadLibraryPage({
+        offset: pageParam,
+        limit: pageSize,
+        search: searchQuery,
+        category: selectedCategory,
+        author: authorFilter,
+        shelf: activeShelf as ShelfFilter,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.hasMore ? allPages.length * pageSize : undefined,
+  });
+
+  // offset 分页在数据变动时可能返回重复项，按 id 去重保证 key 唯一
+  const books = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: Book[] = [];
+    for (const page of booksQuery.data?.pages ?? []) {
+      for (const book of page.books) {
+        if (seen.has(book.id)) continue;
+        seen.add(book.id);
+        merged.push(book);
+      }
+    }
+    return merged;
+  }, [booksQuery.data]);
+
+  const totalBooks = booksQuery.data?.pages.at(-1)?.total ?? 0;
+  const hasMore = booksQuery.hasNextPage;
+  const isLoading = metaQuery.isLoading || booksQuery.isLoading;
+
+  const shelfCounts = useMemo(() => {
+    const base = metaQuery.data;
+    const total = base?.total ?? 0;
+    return {
+      all: total,
+      reading: base?.shelfCounts.reading ?? 0,
+      unread: base?.shelfCounts.unread ?? 0,
+      done: base?.shelfCounts.done ?? 0,
+      recent: Math.min(RECENT_SHELF_SIZE, total),
+    } as Record<ShelfKey, number>;
+  }, [metaQuery.data]);
+  const categoryCounts = metaQuery.data?.categoryCounts;
+
+  const loadMoreBooks = () => {
+    if (!booksQuery.isFetchingNextPage) void booksQuery.fetchNextPage();
+  };
 
   const refetchLibrary = () => queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY });
 
@@ -333,79 +377,15 @@ function LibraryPageInner() {
     e.target.value = '';
   };
 
-  // 最近添加书架的成员集合（一次排序，避免在逐书过滤里反复排序造成 O(n²)）
-  const recentBookIds = useMemo(
-    () =>
-      new Set(
-        [...books]
-          .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
-          .slice(0, RECENT_SHELF_SIZE)
-          .map((b) => b.id),
-      ),
-    [books],
-  );
-
-  const filteredBooks = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-
-    return books.filter((book) => {
-      const matchesCategory = !selectedCategory || book.category === selectedCategory;
-      const searchableText = [book.title, book.author, book.publisher, book.description]
-        .join(' ')
-        .toLowerCase();
-      const matchesQuery = !normalizedQuery || searchableText.includes(normalizedQuery);
-      const matchesAuthor = !authorFilter || (book.author || '').includes(authorFilter);
-      const progress = book.readProgress ?? 0;
-      const matchesShelf = (() => {
-        switch (activeShelf) {
-          case 'reading':
-            return progress > 0 && progress < 100;
-          case 'unread':
-            return progress <= 0;
-          case 'done':
-            return progress >= 100;
-          case 'recent':
-            // 最近添加：按加入时间取前 N 本（规则书架，BookLore Magic Shelves 简化版）
-            return recentBookIds.has(book.id);
-          default:
-            return true;
-        }
-      })();
-      return matchesCategory && matchesQuery && matchesAuthor && matchesShelf;
-    });
-  }, [books, searchQuery, selectedCategory, authorFilter, activeShelf, recentBookIds]);
-
-  // 各智能书架数量（一次遍历）
-  const shelfCounts = useMemo(() => {
-    const counts: Record<ShelfKey, number> = { all: books.length, reading: 0, unread: 0, done: 0, recent: 0 };
-    books.forEach((b) => {
-      const progress = b.readProgress ?? 0;
-      if (progress > 0 && progress < 100) counts.reading += 1;
-      else if (progress <= 0) counts.unread += 1;
-      else counts.done += 1;
-      if (recentBookIds.has(b.id)) counts.recent += 1;
-    });
-    return counts;
-  }, [books, recentBookIds]);
-
-  const visibleBooks = filteredBooks.slice(0, visibleCount);
-
-  // 分类计数：一次遍历建 Map。此前写在侧栏渲染循环里，O(分类数×书数) 且每次渲染重算
-  const categoryCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    books.forEach((b) => {
-      counts.set(b.category, (counts.get(b.category) || 0) + 1);
-    });
-    return counts;
-  }, [books]);
-
-  // 封面按需加载：只为当前可见区（含预取 1 页）拉取，避免大书库全量请求
-  // inflight 去重：快速切换过滤条件导致 effect 重跑时，同一本书不重复发起请求
+  // 封面按需加载：只为已加载的书目拉取（分页本身已限制在 PAGE_STEP 条/页）
+  // inflight 去重：快速切换筛选条件导致 effect 重跑时，同一本书不重复发起请求
+  // 无封面（coverPath 为空）直接跳过：否则每个无封面书籍都会产生一次 404 请求，
+  // 浏览器会把每个 404 都打进控制台（书架页一次刷出上百条），且毫无意义
   const inflightCoversRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const targets = visibleBooks
-      .concat(filteredBooks.slice(visibleCount, visibleCount + PAGE_STEP))
-      .filter((b) => !coverUrls[b.id] && !inflightCoversRef.current.has(b.id));
+    const targets = books.filter(
+      (b) => b.coverPath && !coverUrls[b.id] && !inflightCoversRef.current.has(b.id),
+    );
     if (targets.length === 0) return;
     let cancelled = false;
     targets.forEach((book) => {
@@ -432,12 +412,7 @@ function LibraryPageInner() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [books, searchQuery, selectedCategory, authorFilter, visibleCount]);
-
-  // 过滤条件变化时回到第一页
-  useEffect(() => {
-    setVisibleCount(PAGE_STEP);
-  }, [searchQuery, selectedCategory, authorFilter, activeShelf]);
+  }, [books]);
 
   const openReader = (book: Book) => {
     router.push(`/reader/${book.id}`);
@@ -460,8 +435,8 @@ function LibraryPageInner() {
                 <input
                   type="text"
                   placeholder="搜索书名、作者、出版社..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="pl-10 pr-4 py-2 w-80 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
                 />
               </div>
@@ -588,7 +563,7 @@ function LibraryPageInner() {
                 ×
               </button>
             </span>
-            <span className="text-xs text-gray-400">共 {filteredBooks.length} 本</span>
+            <span className="text-xs text-gray-400">共 {totalBooks} 本</span>
           </div>
         )}
         <div className="flex gap-6">
@@ -639,7 +614,7 @@ function LibraryPageInner() {
               >
                 <div className="flex items-center justify-between">
                   <span>全部书籍</span>
-                  <span className="text-sm text-gray-500">{books.length}</span>
+                  <span className="text-sm text-gray-500">{metaQuery.data?.total ?? 0}</span>
                 </div>
               </button>
               
@@ -656,7 +631,7 @@ function LibraryPageInner() {
                     <div className="flex items-center justify-between">
                       <span>{category.name}</span>
                       <span className="text-sm text-gray-500">
-                        {categoryCounts.get(category.name) ?? 0}
+                        {categoryCounts?.get(category.name) ?? 0}
                       </span>
                     </div>
                   </button>
@@ -725,7 +700,8 @@ function LibraryPageInner() {
                     {selectedCategory || '全部书籍'}
                   </h2>
                   <p className="text-sm text-gray-500 mt-1">
-                    共 {filteredBooks.length} 本书
+                    共 {totalBooks} 本书
+                    {hasMore && <span className="text-gray-400">（已加载 {books.length}）</span>}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -752,7 +728,7 @@ function LibraryPageInner() {
                 <div className="p-12 text-center text-gray-500">加载中...</div>
               ) : importing ? (
                 <div className="p-12 text-center text-gray-500">正在导入书籍...</div>
-              ) : filteredBooks.length === 0 ? (
+              ) : books.length === 0 ? (
                 <div className="p-12 text-center">
                   <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                   <p className="text-gray-500">暂无书籍</p>
@@ -760,7 +736,7 @@ function LibraryPageInner() {
                 </div>
               ) : viewMode === 'grid' ? (
                 <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                  {visibleBooks.map(book => (
+                  {books.map(book => (
                     <div
                       key={book.id}
                       className="group bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition-shadow"
@@ -827,7 +803,7 @@ function LibraryPageInner() {
                 </div>
               ) : (
                 <div className="divide-y divide-gray-200">
-                  {visibleBooks.map(book => (
+                  {books.map(book => (
                     <div
                       key={book.id}
                       className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors group"
@@ -885,13 +861,16 @@ function LibraryPageInner() {
                   ))}
                 </div>
               )}
-              {visibleCount < filteredBooks.length && (
+              {hasMore && (
                 <div className="px-6 pb-8">
                   <button
-                    onClick={() => setVisibleCount((c) => c + PAGE_STEP)}
-                    className="w-full py-3 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                    onClick={loadMoreBooks}
+                    disabled={booksQuery.isFetchingNextPage}
+                    className="w-full py-3 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-60"
                   >
-                    加载更多（剩余 {filteredBooks.length - visibleCount} 本）
+                    {booksQuery.isFetchingNextPage
+                      ? '加载中...'
+                      : `加载更多（剩余 ${Math.max(0, totalBooks - books.length)} 本）`}
                   </button>
                 </div>
               )}

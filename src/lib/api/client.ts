@@ -1,6 +1,7 @@
 /**
  * 后端 API client
- * 地址与 Token 优先取 localStorage（设置页可改），回退构建时环境变量
+ * 地址优先取 localStorage（设置页可改），回退构建时环境变量；
+ * Token 只取 localStorage —— 见下方 getApiToken 的安全说明。
  */
 
 export function getApiBaseUrl(): string {
@@ -11,16 +12,41 @@ export function getApiBaseUrl(): string {
   return (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 }
 
+/**
+ * 读取 API Token。
+ *
+ * 安全约束（勿回退）：此函数**刻意不读** NEXT_PUBLIC_API_TOKEN。
+ * NEXT_PUBLIC_* 变量会在 `next build` 时内联进客户端 JS bundle，任何以它命名的
+ * 密钥都等价于公开发布（view-source 即可取得全站写权限）。Token 只能来自
+ * 运行时写入的 localStorage（设置页 saveApiConfig），否则留空由后端返回 401。
+ */
 export function getApiToken(): string {
   if (typeof window !== 'undefined') {
-    return window.localStorage.getItem('kb_api_token') || process.env.NEXT_PUBLIC_API_TOKEN || '';
+    return window.localStorage.getItem('kb_api_token') || '';
   }
-  return process.env.NEXT_PUBLIC_API_TOKEN || '';
+  return '';
 }
 
 export function saveApiConfig(baseUrl: string, token: string): void {
   window.localStorage.setItem('kb_api_base', baseUrl.replace(/\/$/, ''));
   window.localStorage.setItem('kb_api_token', token);
+}
+
+/**
+ * 带状态码的错误类型。
+ *
+ * 此前只抛 `new Error(message)`，状态码在字符串化时就丢了 —— 调用方只能靠
+ * `message.includes('409')` 这种不可靠的字符串匹配（实际上永远不会命中，
+ * message 里只有后端的 detail 文本）。现在调用方按 `err.status` 判断。
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,7 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // 非 JSON 错误体，用原始文本
     }
-    throw new Error(message);
+    throw new ApiError(resp.status, message);
   }
   if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
@@ -137,9 +163,63 @@ export function getDocumentInsight(id: string): Promise<DocumentInsight> {
 
 // ---------- documents / collections ----------
 
+/**
+ * 列表接口的单页上限（与后端 `documents.LIST_HARD_LIMIT` 对齐）。
+ *
+ * 后端未显式传 limit 时按默认页大小（200）截断，避免任何一次列表都把整库读进内存。
+ * 真正需要全量的场景（书架、命令面板、双链补全）必须显式传这个值；
+ * 只做"找最近的 N 条"的场景不传，接受默认分页。
+ */
+export const LIST_HARD_LIMIT = 1000;
+
 export function listDocuments(params?: Record<string, string>): Promise<ApiDocument[]> {
   const qs = params ? '?' + new URLSearchParams(params).toString() : '';
   return request<ApiDocument[]>(`/api/documents${qs}`);
+}
+
+export interface ApiLibraryStats {
+  total: number;
+  reading: number;
+  unread: number;
+  done: number;
+  /** key = collection_id */
+  by_collection: Record<string, number>;
+  uncategorized: number;
+}
+
+/** 书架侧栏计数：服务端聚合一次取全，前端无需为算数量而拉整库 */
+export function getLibraryStats(): Promise<ApiLibraryStats> {
+  return request<ApiLibraryStats>('/api/documents/stats');
+}
+
+/** 与 listDocuments 同参的计数，用于"共 N 本"/剩余量显示 */
+export function countDocuments(params?: Record<string, string>): Promise<number> {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+  return request<{ count: number }>(`/api/documents/count${qs}`).then((r) => r.count);
+}
+
+/**
+ * 按 offset 逐页取完整结果集。
+ *
+ * 后端单页硬上限是 LIST_HARD_LIMIT，超过就 422，所以"全量"语义不能靠一次大 limit
+ * 表达 —— 库里有 1300+ 本时单请求最多只能拿到 1000 条，剩下的静默消失。
+ * 双链补全、命令面板这类确实需要全量的场景走这里翻页。
+ */
+export async function listAllDocuments(
+  params?: Record<string, string>,
+): Promise<ApiDocument[]> {
+  const all: ApiDocument[] = [];
+  for (let offset = 0; ; offset += LIST_HARD_LIMIT) {
+    const page = await listDocuments({
+      ...params,
+      limit: String(LIST_HARD_LIMIT),
+      offset: String(offset),
+    });
+    all.push(...page);
+    if (page.length < LIST_HARD_LIMIT) return all;
+    // 防御：后端异常时避免无限翻页
+    if (offset > LIST_HARD_LIMIT * 100) return all;
+  }
 }
 
 export function createDocument(payload: {
@@ -457,8 +537,12 @@ async function downloadAttachment(path: string, filename: string): Promise<void>
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // 同步 revoke 会在部分浏览器上取消尚未开始的下载（封面 blob URL 那套生命周期
+  // 管理就是为此写的）。推迟到下一轮事件循环再释放。
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** 全部标注导出：按书分组 Markdown zip */

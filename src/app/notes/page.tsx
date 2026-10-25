@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import {
   ApiDocument,
-  listDocuments,
+  listAllDocuments,
   createDocument,
   patchDocument,
   deleteDocument,
@@ -96,7 +96,10 @@ function NotesPageInner() {
     // 剪藏展开直接渲染正文（轻量列表模式拿不到内容会显示空）；
     // 笔记保持轻量摘要，编辑器按需拉全文
     queryFn: () =>
-      listDocuments({ type: listType, include_content: listType === 'webclip' ? 'true' : 'false' }),
+      listAllDocuments({
+        type: listType,
+        include_content: listType === 'webclip' ? 'true' : 'false',
+      }),
     enabled: mode === 'api',
   });
   const notes = notesQuery.data ?? [];
@@ -118,9 +121,19 @@ function NotesPageInner() {
   }, [notes, listSearch, workflowFilter]);
 
   const workflowCounts = useMemo(() => {
-    const counts = { all: notes.length, inbox: 0, review: 0, done: 0 };
+    const counts: { all: number; inbox: number; review: number; done: number } = {
+      all: notes.length,
+      inbox: 0,
+      review: 0,
+      done: 0,
+    };
     notes.forEach((n) => {
-      const wf = ((n.meta as { workflow?: string } | undefined)?.workflow || 'inbox') as 'inbox' | 'review' | 'done';
+      const raw = (n.meta as { workflow?: string } | undefined)?.workflow || 'inbox';
+      // meta.workflow 是用户可写的任意字符串（后端 dict 无约束），`as` 断言只在编译期生效。
+      // 此前遇到 'archived' 这类值会得到 counts['archived'] === undefined，NaN += 1 传播到 UI。
+      const wf = (['inbox', 'review', 'done'] as const).includes(raw as 'inbox' | 'review' | 'done')
+        ? (raw as 'inbox' | 'review' | 'done')
+        : 'inbox';
       counts[wf] += 1;
     });
     return counts;
@@ -171,7 +184,7 @@ function NotesPageInner() {
   useEffect(() => {
     const openId = searchParams.get('open');
     if (openId && mode === 'api') {
-      listDocuments({ q: '', include_content: 'false' })
+      listAllDocuments({ include_content: 'false' })
         .then((docs) => {
           const target = docs.find((d) => d.id === openId);
           if (!target) return;
@@ -208,30 +221,36 @@ function NotesPageInner() {
   const handleDailyNote = async () => {
     const now = new Date();
     const title = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    let existing = notes.find((n) => n.title === title);
-    if (!existing) {
-      const all = await listDocuments({ include_content: 'false' });
-      existing = all.find((n) => n.title === title);
-    }
-    if (existing) {
-      setEditingId(existing.id);
-      return;
-    }
-
-    // 自动嵌入今日划线/批注（按书分组，带 [[书名]] 双链），对标 Obsidian 每日笔记
-    let content = '';
     try {
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const hits = await reviewAnnotations({ since: todayStart.toISOString(), limit: 200 });
-      content = buildDailyNoteContent(hits, title);
-    } catch (err) {
-      // 后端不可用/无标注时退化为空白模板
-      console.warn('获取今日标注失败:', err);
-    }
+      let existing = notes.find((n) => n.title === title);
+      if (!existing) {
+        const all = await listAllDocuments({ include_content: 'false' });
+        existing = all.find((n) => n.title === title);
+      }
+      if (existing) {
+        setEditingId(existing.id);
+        return;
+      }
 
-    const doc = await createDocument({ type: 'note', title, content });
-    refetchNotes();
-    setEditingId(doc.id);
+      // 自动嵌入今日划线/批注（按书分组，带 [[书名]] 双链），对标 Obsidian 每日笔记
+      let content = '';
+      try {
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const hits = await reviewAnnotations({ since: todayStart.toISOString(), limit: 200 });
+        content = buildDailyNoteContent(hits, title);
+      } catch (err) {
+        // 后端不可用/无标注时退化为空白模板
+        console.warn('获取今日标注失败:', err);
+      }
+
+      // 此前 createDocument 落在 try 之外：失败时是未捕获的 Promise rejection，
+      // 用户看不到任何提示也不会 refetch
+      const doc = await createDocument({ type: 'note', title, content });
+      refetchNotes();
+      setEditingId(doc.id);
+    } catch (err) {
+      toast.error('创建今日笔记失败：' + (err as Error).message);
+    }
   };
 
   const handleImportMarkdown = async (e: React.ChangeEvent<HTMLInputElement>) => {

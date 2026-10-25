@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search as SearchIcon, FileText, BookOpen, Globe, CornerDownLeft, Loader2, Sparkles } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiDocument, listDocuments, clipUrl, createDocument, patchDocument, startReindex, downloadBackup } from '@/lib/api/client';
+import { ApiDocument, listAllDocuments, clipUrl, createDocument, patchDocument, startReindex, downloadBackup } from '@/lib/api/client';
 import { resolveMode } from '@/lib/dataSource';
 import { fuzzyScore } from '@/lib/fuzzy';
 import { useToast, useOverlayA11y } from '@/components/ui';
@@ -72,7 +72,10 @@ export default function CommandPalette({ initialOpen = false }: { initialOpen?: 
       const m = await resolveMode();
       setMode(m);
       if (m !== 'api') return [];
-      const docs: ApiDocument[] = await listDocuments({ include_content: 'false' });
+      // 命令面板要能搜到任意一篇：走翻页取全量（单页硬上限 1000，超了会漏）
+      const docs: ApiDocument[] = await listAllDocuments({
+        include_content: 'false',
+      });
       return docs
         .filter((d) => !d.deleted_at)
         .map<PaletteItem>((d) => ({ id: d.id, title: d.title || '无标题', type: d.type }))
@@ -134,7 +137,10 @@ export default function CommandPalette({ initialOpen = false }: { initialOpen?: 
             type: 'note',
             description: '快速进入需要归档、关联和补充标签的内容',
             action: async () => {
-              const docs = await listDocuments({ type: 'note', include_content: 'false' });
+              const docs = await listAllDocuments({
+                type: 'note',
+                include_content: 'false',
+              });
               const target = docs.find((d) => (d.meta as { workflow?: string })?.workflow === 'inbox') || docs[0];
               if (target) router.push(`/notes?open=${target.id}`);
             },

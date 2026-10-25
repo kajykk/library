@@ -2,16 +2,16 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiDocument, Backlink } from '@/lib/api/client';
-import { getBacklinks, getUnlinkedMentions, listDocuments } from '@/lib/api/client';
+import { getBacklinks, getUnlinkedMentions, listAllDocuments } from '@/lib/api/client';
 import { useNoteRelations } from '../useNoteRelations';
 
 vi.mock('@/lib/api/client', () => ({
-  listDocuments: vi.fn(),
+  listAllDocuments: vi.fn(),
   getBacklinks: vi.fn(),
   getUnlinkedMentions: vi.fn(),
 }));
 
-const mockedDocs = vi.mocked(listDocuments);
+const mockedDocs = vi.mocked(listAllDocuments);
 const mockedBacklinks = vi.mocked(getBacklinks);
 const mockedMentions = vi.mocked(getUnlinkedMentions);
 
@@ -68,9 +68,11 @@ describe('useNoteRelations', () => {
       { id: 'b', title: 'B 文档' },
       { id: 'c', title: 'C 文档' },
     ]);
-    // 只拉一次列表，且不带正文
+    // 只拉一次列表，且不带正文；双链候选必须覆盖全库 → 走翻页取全量
     expect(mockedDocs).toHaveBeenCalledTimes(1);
-    expect(mockedDocs).toHaveBeenCalledWith({ include_content: 'false' });
+    expect(mockedDocs).toHaveBeenCalledWith({
+      include_content: 'false',
+    });
   });
 
   it('suggestedLinks 按标题包含关系打分、降序排序、截断前 5 并排除自身', async () => {
