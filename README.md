@@ -91,10 +91,25 @@ NEXT_PUBLIC_CSP_CONNECT_SRC="'self' https://api.example.com wss://api.example.co
 
 注意:`NEXT_PUBLIC_*` 在构建期内联进产物,运行时修改无效。
 
+## 开发与提交
+
+pre-commit 钩子包含 gitleaks（staged 变更密钥扫描）与 ESLint。
+
+### gitleaks 全历史扫描
+
+pre-commit 的 gitleaks hook 依赖 Go 构建缓存（首次需网络）。如需对全历史做一次完整扫描：
+
+```bash
+# 有 Go 环境
+gitleaks detect --source . --no-banner
+# 无 Go 环境（Docker）
+docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --no-banner
+```
+
 ## 测试
 
 ```bash
-cd server && python -m pytest tests -q      # 后端 93 用例
+cd server && python -m pytest -q              # 后端 95 用例（pytest.ini 限定 tests/）
 npm run lint && npx tsc --noEmit && npm run build   # 前端静态检查
 npm run test:e2e                            # Playwright 冒烟(本机用 Edge;CI 用 chromium)
 ```
