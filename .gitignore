@@ -56,8 +56,11 @@ server/probe-data/
 console/
 # docs/ 下混有截图等二进制，默认忽略；但 Markdown 文档（含代码审查报告）需入库。
 # 注意：写成 `docs/` 会连目录一起排除，此时 `!docs/*.md` 不再生效，故用 `docs/*`。
+# gitignore 的 `*` 不跨越 `/`，所以 `docs/*` 只排除一层；放行目录后其中的文件默认可跟踪。
 docs/*
 !docs/*.md
+# 路线图任务书与进度是本轮执行的唯一依据，必须入库；截图仍留在 docs/screenshots/ 下被忽略。
+!docs/roadmap/
 
 # playwright
 node_modules/.cache/
