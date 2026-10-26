@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,8 @@ class Settings(BaseSettings):
     auto_classify_ocr: bool = False
     # 全局限流开关：生产保持开启；e2e/压测时置 0（同一 IP 连续跑多个 spec 会被累计计数打断）
     rate_limit_enabled: bool = True
+    # 质量审计：正文少于该字数视为「过短」，PDF 低于该阈值标记 needs_ocr
+    quality_min_content_chars: int = Field(default=500, ge=1, le=100_000)
 
     @property
     def cors_origin_list(self) -> list[str]:

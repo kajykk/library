@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import Nav from '@/components/Nav';
+import DataSourceStatusBar from '@/components/DataSourceStatusBar';
 import ServiceWorkerRegister from '@/components/ServiceWorkerRegister';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import LazyCommandPalette from '@/components/LazyCommandPalette';
@@ -42,6 +43,7 @@ export default function RootLayout({
         <Providers>
           {/* Nav 置于错误边界之外：页面崩溃时导航仍然可用，用户不会被错误页困住 */}
           <Nav />
+          <DataSourceStatusBar />
           <ErrorBoundary>
             {children}
           </ErrorBoundary>

@@ -47,6 +47,7 @@ def list_documents(
     q: str | None = None,
     author: str | None = None,
     status: str | None = None,
+    quality: str | None = None,
     include_deleted: bool = False,
     include_content: bool = False,
     limit: int | None = Query(default=None, ge=1, le=LIST_HARD_LIMIT),
@@ -59,6 +60,7 @@ def list_documents(
         stmt = stmt.options(defer(Document.content))
     stmt = apply_document_filters(
         stmt,
+        db=db,
         include_deleted=include_deleted,
         type=type,
         types=types,
@@ -67,6 +69,7 @@ def list_documents(
         q=q,
         author=author,
         status=status,
+        quality=quality,
     )
     stmt = stmt.order_by(Document.created_at.desc()).offset(offset)
     # 未显式传 limit 时按默认页大小截断；需要全量的调用方（书架等）显式传 limit=LIST_HARD_LIMIT

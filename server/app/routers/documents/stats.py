@@ -78,12 +78,14 @@ def count_documents(
     q: str | None = None,
     author: str | None = None,
     status: str | None = None,
+    quality: str | None = None,
     include_deleted: bool = False,
     db: Session = Depends(get_db),
 ):
     """与列表同参的计数：书架用它显示"共 N 本"和剩余量，不必把整库拉下来数"""
     stmt = apply_document_filters(
         select(func.count()).select_from(Document),
+        db=db,
         include_deleted=include_deleted,
         type=type,
         types=types,
@@ -92,5 +94,6 @@ def count_documents(
         q=q,
         author=author,
         status=status,
+        quality=quality,
     )
     return CountOut(count=db.scalar(stmt) or 0)

@@ -19,6 +19,7 @@ from .routers import (
     export,
     links,
     migrate,
+    quality,
     reading_records,
     search,
     stats,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(backup.router, prefix="/api", dependencies=[Depends(verify_token)])
     app.include_router(clip.router, prefix="/api", dependencies=[Depends(verify_token)])
     app.include_router(export.router, prefix="/api", dependencies=[Depends(verify_token)])
+    app.include_router(quality.router, prefix="/api", dependencies=[Depends(verify_token)])
 
     app.mount("/ws/collab", collab_asgi)
 

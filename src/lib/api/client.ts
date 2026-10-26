@@ -737,3 +737,85 @@ export async function migrateCover(docId: string, blob: Blob, filename: string):
   form.append('file', blob, filename);
   await request<void>('/api/migrate/cover', { method: 'POST', body: form });
 }
+
+// ---------- quality（B1）----------
+
+export type QualityIssueCode =
+  | 'missing_file' | 'orphan_cover' | 'empty_content' | 'short_content'
+  | 'no_cover' | 'unclassified' | 'needs_ocr' | 'duplicate_sha' | 'language_variant';
+
+export type QualityFilter =
+  | 'issues' | 'empty_content' | 'short_content' | 'no_cover' | 'unclassified'
+  | 'needs_ocr' | 'missing_file' | 'duplicate' | 'not_audited';
+
+export interface QualitySummary {
+  total: number;
+  audited: number;
+  stale: boolean;
+  last_audited_at: string | null;
+  min_content_chars: number;
+  counts: Record<string, number>;
+  duplicate_groups: number;
+  orphan_files: number;
+  orphan_covers: number;
+}
+
+export interface QualityIssueItem {
+  document_id: string;
+  title: string;
+  type: string;
+  format: string;
+  language: string;
+  content_chars: number;
+  file_size: number;
+  cover_path: string | null;
+  collection_id: string | null;
+  issues: string[];
+  checked_at: string | null;
+}
+
+export interface QualityAuditStatus {
+  name: string;
+  running: boolean;
+  total: number;
+  done: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface QualityOrphans {
+  orphan_files: Array<{ rel_path: string; size: number }>;
+  orphan_covers: Array<{ rel_path: string; size: number }>;
+  missing_files: Array<{ document_id: string; title: string; rel_path: string }>;
+  total_bytes: number;
+}
+
+export function getQualitySummary(): Promise<QualitySummary> {
+  return request<QualitySummary>('/api/quality/summary');
+}
+
+export function listQualityIssues(
+  issue: QualityIssueCode | 'all',
+  limit = 50,
+  offset = 0,
+): Promise<{ total: number; items: QualityIssueItem[] }> {
+  const params = new URLSearchParams({ issue, limit: String(limit), offset: String(offset) });
+  return request<{ total: number; items: QualityIssueItem[] }>(`/api/quality/issues?${params}`);
+}
+
+export function startQualityAudit(ids?: string[]): Promise<{ status: string }> {
+  return request<{ status: string }>('/api/quality/audit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(ids ? { ids } : { full: true }),
+  });
+}
+
+export function getQualityAuditStatus(): Promise<QualityAuditStatus> {
+  return request<QualityAuditStatus>('/api/quality/audit-status');
+}
+
+export function getQualityOrphans(): Promise<QualityOrphans> {
+  return request<QualityOrphans>('/api/quality/orphans');
+}

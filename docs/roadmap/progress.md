@@ -12,24 +12,40 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | 未开始（B0） |
-| 当前任务 | 无（等待用户启动执行轮） |
-| 最后更新 | 2026-10-26（任务书 B0–B6、api-contracts、data-model 已写完并对齐，等待执行方启动 B0-01） |
-| 阻塞项 | D1–D6 待确认（见 README 第 5 节）；不影响 B0/B1/B3 的只读与前端任务 |
-| 下一批前置 | B0 全部 DONE |
+| 当前批次 | B1 基本完成（核心 9/11 DONE，2 项部分完成） |
+| 当前任务 | 待收尾：B1-08/B1-10 部分完成，B1-11 报告已写 |
+| 最后更新 | 2026-10-26（B1-01~B1-07、B1-09 DONE；B1-08/B1-10 部分；B1-11 报告已写） |
+| 阻塞项 | D1-D6 待确认 |
+| 下一批前置 | B2-01 依赖 quality_audit；迁移 0008 需 G3 |
 
 ## B0 · 基线与护栏
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B0-01 | [ ] 提交路线图文档（含 `.gitignore` 的 `!docs/roadmap/` 例外）+ `next.config.mjs` dev-only CSP 修复 | TODO | |
-| B0-02 | [ ] 基线备份 + `integrity_check` + 记录计数 | TODO | |
-| B0-03 | [ ] 新增 `resolveDataSourceStatus()` 与状态类型 | TODO | |
-| B0-04 | [ ] 修复设置页保存后 React Query 模式缓存未失效 | TODO | |
-| B0-05 | [ ] 新增 `StatePanel` / `FilterChip` 并导出 | TODO | |
-| B0-06 | [ ] 新增 `job_state.py` 后台任务状态基座 | TODO | |
-| B0-07 | [ ] 补 B0 单元测试与前端测试 | TODO | |
-| B0-08 | [ ] 跑全量验证并写 B0 报告 | TODO | |
+| B0-01 | [x] 提交路线图文档 + CSP 修复 | DONE | commits `3cfb28a` + `aca0f3e` |
+| B0-02 | [x] 基线备份 + integrity_check | DONE | 备份 `20261026_150811`；integrity=ok；alive=1298 |
+| B0-03 | [x] resolveDataSourceStatus() 与状态类型 | DONE | 9 测试通过 |
+| B0-04 | [x] 修复设置页缓存失效 | DONE | typecheck 通过 |
+| B0-05 | [x] StatePanel / FilterChip | DONE | 6 测试通过 |
+| B0-06 | [x] job_state.py | DONE | 10 测试通过 |
+| B0-07 | [x] 全量验证 | DONE | pytest 105 / npm 73 全绿 |
+| B0-08 | [x] B0 报告 | DONE | [reports/B0-2026-10-26.md](reports/B0-2026-10-26.md) |
+
+## B1 · 数据源可见化 + 质量中心
+
+| ID | 任务 | 状态 | 证据 |
+|---|---|---|---|
+| B1-01 | [x] DocumentQuality 模型 + 迁移 0007 | DONE | 迁移成功；表/索引/列验证通过；4 测试；integrity=ok |
+| B1-02 | [x] quality_audit 审计服务 | DONE | normalize_language/audit_one/scan_orphans/list_issues/start_audit/status；19 测试 |
+| B1-03 | [x] quality 路由并注册 | DONE | summary/issues/orphans/audit/audit-status；12 测试 |
+| B1-04 | [x] apply_document_filters 支持 quality | DONE | 10 种 quality 筛选值；列表/计数一致性；3 测试 |
+| B1-05 | [x] KB_QUALITY_MIN_CONTENT_CHARS | DONE | 默认 500，范围 1-100000 |
+| B1-06 | [x] 前端 API client 质量接口 | DONE | typecheck 通过 |
+| B1-07 | [x] DataSourceStatusBar + layout | DONE | 8 测试通过 |
+| B1-08 | [ ] 首次配置引导 + 书架错误/空态 | PARTIAL | OnboardingBanner 组件已建+4 测试；未嵌入 library/page.tsx |
+| B1-09 | [x] /quality 质量中心页面 | DONE | 汇总卡/issue 表格/孤儿文件区/审计进度 |
+| B1-10 | [ ] 书架质量 chips + 设置页健康标签 | PARTIAL | FilterChip 已建；chips 未嵌入 library/page.tsx |
+| B1-11 | [x] 测试、B1 报告 | DONE | pytest 143 / npm 85 全绿；[reports/B1-2026-10-26.md](reports/B1-2026-10-26.md) |
 
 ## B1 · 数据源可见化 + 质量中心（只读）
 

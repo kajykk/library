@@ -50,6 +50,7 @@ from .files import (  # noqa: E402
 )
 from .filters import (  # noqa: E402
     apply_document_filters,
+    apply_quality_filter,
     apply_status_filter,
     apply_types_filter,
 )

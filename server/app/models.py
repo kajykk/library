@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -165,3 +166,21 @@ class ReadingRecord(Base):
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     units_read: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DocumentQuality(Base):
+    """文档质量快照（B1）：缓存昂贵检查结果，不替代 documents 实时字段。"""
+
+    __tablename__ = "document_quality"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    content_chars: Mapped[int] = mapped_column(Integer, default=0)
+    file_exists: Mapped[bool] = mapped_column(Boolean, default=True)
+    cover_exists: Mapped[bool] = mapped_column(Boolean, default=True)
+    needs_ocr: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    duplicate_group_size: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    issues: Mapped[list] = mapped_column(JSONVariant, default=list)
+    scan_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
