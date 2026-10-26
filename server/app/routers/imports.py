@@ -1,7 +1,7 @@
-"""导入与批量治理 API（B2-03/06/07/08/09）：目录扫描、导入、封面、重提取、语言归一化、孤儿隔离。
+"""导入与批量治理 API（B2-03/06/08/09）：目录扫描、导入、封面、语言归一化、孤儿隔离。
 
-批量修改/软删除与筛选结果 id 已迁到 documents 包（PATCH /documents/batch、GET /documents/ids），
-否则会被 documents 的 /{doc_id} 抢先匹配。
+批量修改/软删除、筛选结果 id 与重提取已迁到 documents 包（`documents/batch.py`、
+`documents/ids.py`、`documents/reextract.py`），否则会被 documents 的 `/{doc_id}` 抢先匹配。
 """
 
 import math
@@ -76,11 +76,6 @@ class NormalizeLanguageResponse(BaseModel):
     batches: int
 
 
-class ReextractRequest(BaseModel):
-    ids: list[str]
-    confirm: bool = False
-
-
 class OrphanQuarantineRequest(BaseModel):
     rel_paths: list[str]
     confirm: bool = False
@@ -93,12 +88,6 @@ class OrphanQuarantineResponse(BaseModel):
     operation_id: str | None = None
     quarantine_dir: str | None = None
     results: list[dict]
-
-
-class BatchResponse(BaseModel):
-    status: str
-    affected: int
-    operation_id: str | None = None
 
 
 # ---- 目录扫描 ----
@@ -289,35 +278,6 @@ def normalize_languages(req: NormalizeLanguageRequest, db: Session = Depends(get
         unchanged=len(rows) - len(changes),
         batches=batches,
     )
-
-
-# ---- 重提取 ----
-
-@router.post("/documents/reextract", response_model=BatchResponse)
-def reextract_documents(req: ReextractRequest, db: Session = Depends(get_db)):
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="需要 confirm: true")
-    if len(req.ids) > 500:
-        raise HTTPException(status_code=400, detail="单次最多 500 个文档")
-
-    # 简化实现：只记录操作日志，实际重提取由后台任务处理
-    affected = 0
-    for id_str in req.ids:
-        doc = db.get(Document, uuid.UUID(id_str))
-        if doc is not None and doc.deleted_at is None:
-            affected += 1
-
-    log = record(
-        db,
-        kind="reextract",
-        document_ids=[uuid.UUID(i) for i in req.ids],
-        before_state={"docs": {i: {"content_chars": 0} for i in req.ids}},
-        after_state={},
-        summary=f"重提取：{affected} 本",
-        undoable=False,
-    )
-    db.commit()
-    return BatchResponse(status="applied", affected=affected, operation_id=str(log.id))
 
 
 # ---- 孤儿隔离 ----

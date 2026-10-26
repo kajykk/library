@@ -10,6 +10,7 @@
 - ids: 筛选结果 id 列表（全选筛选结果）
 - batch: 批量修改与批量软删除
 - orphans: `GET /documents/orphans` 契约别名
+- reextract: 后台重提取正文与状态查询
 - tags: 标签设置
 - versions: 版本历史
 - metadata: 在线元数据
@@ -25,8 +26,8 @@ from ._shared import (
     settings,
 )
 
-# 先注册 /stats、/count、/facets、/ids、/batch、/orphans 等静态路由，避免被 crud 的 /{doc_id} 抢先匹配
-from . import batch, facets, ids, orphans, stats  # noqa: E402  isort: skip
+# 先注册 /stats、/count、/facets、/ids、/batch、/orphans、/reextract-status 等静态路由，避免被 crud 的 /{doc_id} 抢先匹配
+from . import batch, facets, ids, orphans, reextract, stats  # noqa: E402  isort: skip
 from . import crud, files, insight, metadata, tags, upload, versions  # noqa: E402  isort: skip
 
 from .crud import (  # noqa: E402

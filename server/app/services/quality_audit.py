@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from ..config import get_settings
 from ..database import SessionLocal
@@ -156,43 +156,71 @@ def _audit_batch(db: Session, docs: list[Document], threshold: int, dup_map: dic
     db.commit()
 
 
+_AUDIT_BATCH = 100
+
+# 审计只需要这些列：不再 select 整行，避免把 content（每本最多 20 万字符）全部载入内存
+_AUDIT_COLUMNS = (
+    Document.id,
+    Document.file_path,
+    Document.cover_path,
+    Document.format,
+    Document.language,
+    Document.collection_id,
+    Document.sha256,
+)
+
+
+def _audit_conditions(ids: list[uuid.UUID] | None) -> list:
+    conditions = [
+        Document.deleted_at.is_(None),
+        Document.type.in_(("book", "pdf")),
+    ]
+    if ids:
+        conditions.append(Document.id.in_(ids))
+    return conditions
+
+
+def _count_audit_docs(db: Session, ids: list[uuid.UUID] | None) -> int:
+    return db.scalar(
+        select(func.count()).select_from(Document).where(*_audit_conditions(ids))
+    ) or 0
+
+
+def _load_audit_batch(
+    db: Session, ids: list[uuid.UUID] | None, offset: int, limit: int
+) -> list[Document]:
+    return db.scalars(
+        select(Document)
+        .where(*_audit_conditions(ids))
+        .options(load_only(*_AUDIT_COLUMNS))
+        .order_by(Document.id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+
 def _run_audit(ids: list[uuid.UUID] | None) -> None:
-    """后台审计任务。"""
+    """后台审计任务：分批读取 + 分批提交，内存与批大小成正比。"""
     try:
         settings = get_settings()
         threshold = settings.quality_min_content_chars
         db = SessionLocal()
         try:
             dup_map = _get_duplicate_groups(db)
-
-            if ids:
-                docs = (
-                    db.query(Document)
-                    .filter(
-                        Document.id.in_(ids),
-                        Document.deleted_at.is_(None),
-                        Document.type.in_(("book", "pdf")),
-                    )
-                    .all()
-                )
-            else:
-                docs = (
-                    db.query(Document)
-                    .filter(
-                        Document.deleted_at.is_(None),
-                        Document.type.in_(("book", "pdf")),
-                    )
-                    .all()
-                )
-
-            total = len(docs)
+            total = _count_audit_docs(db, ids)
             _job.update(total=total, done=0)
 
-            batch_size = 100
-            for i in range(0, total, batch_size):
-                batch = docs[i : i + batch_size]
-                _audit_batch(db, batch, threshold, dup_map)
-                _job.update(done=min(i + batch_size, total))
+            done = 0
+            offset = 0
+            while True:
+                docs = _load_audit_batch(db, ids, offset, _AUDIT_BATCH)
+                if not docs:
+                    break
+                _audit_batch(db, docs, threshold, dup_map)
+                done += len(docs)
+                _job.update(done=min(done, total))
+                db.expunge_all()
+                offset += _AUDIT_BATCH
 
             _job.finish()
         finally:

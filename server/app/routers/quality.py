@@ -4,7 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -112,25 +112,27 @@ def get_quality_summary(db: Session = Depends(get_db)):
         )
     ).scalar() or 0
 
-    # last_audited_at
+    # last_audited_at：仅用于展示
     last_audited = db.execute(
         select(func.max(DocumentQuality.checked_at))
     ).scalar()
 
-    # stale：有文档 updated_at > last_audited 或未审计
-    if last_audited:
-        stale_count = db.execute(
-            select(func.count(Document.id))
-            .outerjoin(DocumentQuality, DocumentQuality.document_id == Document.id)
-            .where(
-                Document.deleted_at.is_(None),
-                Document.type.in_(("book", "pdf")),
-                (DocumentQuality.document_id.is_(None)) | (Document.updated_at > last_audited),
-            )
-        ).scalar() or 0
-        stale = stale_count > 0
-    else:
-        stale = total > 0
+    # stale：逐行比较该文档自己的 checked_at（RW-402）。
+    # 全局 max(checked_at) 会被「更晚审计的其他文档」抬高，从而漏报本行已过期。
+    stale_count = db.execute(
+        select(func.count(Document.id))
+        .outerjoin(DocumentQuality, DocumentQuality.document_id == Document.id)
+        .where(
+            Document.deleted_at.is_(None),
+            Document.type.in_(("book", "pdf")),
+            or_(
+                DocumentQuality.document_id.is_(None),
+                DocumentQuality.checked_at.is_(None),
+                Document.updated_at > DocumentQuality.checked_at,
+            ),
+        )
+    ).scalar() or 0
+    stale = stale_count > 0
 
     # 计数：基于 document_quality 快照 + 实时条件
     def _count_quality(col_condition) -> int:
@@ -194,6 +196,9 @@ def get_quality_summary(db: Session = Depends(get_db)):
         .having(func.count(Document.id) > 1)
     ).all())
 
+    # 孤儿文件/封面：真实扫描 disk vs references，口径与 /quality/orphans 同源
+    orphans = scan_orphans(db)
+
     return QualitySummaryResponse(
         total=total,
         audited=audited,
@@ -202,8 +207,8 @@ def get_quality_summary(db: Session = Depends(get_db)):
         min_content_chars=threshold,
         counts=counts,
         duplicate_groups=duplicate_groups,
-        orphan_files=0,
-        orphan_covers=0,
+        orphan_files=len(orphans["orphan_files"]),
+        orphan_covers=len(orphans["orphan_covers"]),
     )
 
 

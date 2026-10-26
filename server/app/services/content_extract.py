@@ -292,14 +292,13 @@ def _pdf_extract_worker(path_str: str, ocr: bool) -> str:
     return _extract_pdf(Path(path_str), ocr=ocr)
 
 
-def _extract_pdf_isolated(path: Path, ocr: bool) -> str:
-    timeout = OCR_TIMEOUT if ocr else EXTRACT_TIMEOUT
+def _extract_pdf_isolated(path: Path, ocr: bool, timeout_seconds: float) -> str:
     try:
         return _get_process_pool().submit(
             _pdf_extract_worker, str(path), ocr
-        ).result(timeout=timeout)
+        ).result(timeout=timeout_seconds)
     except concurrent.futures.TimeoutError:
-        logger.warning("PDF 进程池提取超时（>%ss），已终止并跳过", timeout)
+        logger.warning("PDF 进程池提取超时（>%ss），已终止并跳过", timeout_seconds)
         _reset_process_pool()
         return ""
     except Exception as exc:
@@ -314,7 +313,28 @@ def extract_text_from_file(fmt: str, path: Path) -> str:
     PDF 文件先做内容嗅探：头部不是 %PDF 的「假 PDF」（如误存为 .pdf 的网页）
     按 HTML / 纯文本提取，可恢复大量本无法检索的文档。
     设置 KB_EXTRACT_PROCESS_ISOLATION=1 时，真实 PDF 改走单进程池（spawn）。
+
+    公共签名保持不变；需要自定义预算时用 extract_text_from_file_with_budget。
     """
+    return _extract_with_budget(fmt, path, timeout_seconds=None)
+
+
+def extract_text_from_file_with_budget(
+    fmt: str, path: Path, timeout_seconds: float = EXTRACT_TIMEOUT
+) -> str:
+    """带显式时间预算的提取入口（RW-401），行为与 extract_text_from_file 一致，
+    但每个分支（含 OCR/进程隔离）统一使用 timeout_seconds 作为单文件上限。"""
+    return _extract_with_budget(fmt, path, timeout_seconds=max(0.1, float(timeout_seconds)))
+
+
+def _extract_with_budget(
+    fmt: str, path: Path, timeout_seconds: float | None
+) -> str:
+    """timeout_seconds=None 时沿用各分支的历史默认预算，保证旧调用行为不变。"""
+
+    def budget(default: float) -> float:
+        return default if timeout_seconds is None else timeout_seconds
+
     if not path.is_file():
         return ""
     sniff = _head(path, 2048)
@@ -322,14 +342,23 @@ def extract_text_from_file(fmt: str, path: Path) -> str:
         if not sniff.startswith(b"%PDF"):
             if _looks_like_html(sniff):
                 logger.info("假 PDF（实为 HTML）按 HTML 提取: %s", path)
-                return _bounded(lambda: _extract_html_bytes(path))
+                return _bounded(
+                    lambda: _extract_html_bytes(path), timeout=budget(EXTRACT_TIMEOUT)
+                )
             logger.info("假 PDF（头部不是 PDF 标记）按文本提取: %s", path)
-            return _bounded(lambda: _read_text(path))
+            return _bounded(
+                lambda: _read_text(path), timeout=budget(EXTRACT_TIMEOUT)
+            )
         if os.getenv("KB_EXTRACT_PROCESS_ISOLATION", "0") == "1":
-            return _extract_pdf_isolated(path, ocr=_ocr_available())
+            ocr = _ocr_available()
+            return _extract_pdf_isolated(
+                path, ocr=ocr, timeout_seconds=budget(OCR_TIMEOUT if ocr else EXTRACT_TIMEOUT)
+            )
         if os.getenv("KB_ENABLE_OCR") == "1" and _ocr_available():
             # OCR 走慢池：90s 预算的任务不能再占用快通道的 worker
             return _bounded(
-                lambda: _extract_pdf(path, ocr=True), timeout=OCR_TIMEOUT, slow=True
+                lambda: _extract_pdf(path, ocr=True),
+                timeout=budget(OCR_TIMEOUT),
+                slow=True,
             )
-    return _bounded(lambda: _extract(fmt, path))
+    return _bounded(lambda: _extract(fmt, path), timeout=budget(EXTRACT_TIMEOUT))

@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R3 完成**（2026-10-27）；R4 待开始 |
-| 当前任务 | RW-401（`reextract` 真实现或摘除），先取 RD-A 决策 |
-| 最后更新 | 2026-10-27（R3 契约对齐：batch/队列/复习/stats/sort/ids） |
-| 阻塞项 | RD-A（R4 `reextract` 端点）、RD-B（R5 前端范围）、RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围 |
-| 下一步 | R4：RD-A → RW-401 → RW-402 |
+| 当前批次 | **返工 R1–R4 完成**（2026-10-27）；R5 待开始 |
+| 当前任务 | RW-501（R5 首项）；RW-504/505 需先取 RD-B 决策 |
+| 最后更新 | 2026-10-27（R4 `reextract` 真实现 + 质量 summary 口径/审计内存） |
+| 阻塞项 | RD-B（R5 前端范围）、RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围 |
+| 下一步 | R5：RW-501 → RW-502 → RW-503 → RD-B → RW-504/505 |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -71,7 +71,7 @@
 | B2-04 | 批量修改/软删除（500 上限、confirm） | DONE | [documents/batch.py](../../server/app/routers/documents/batch.py)；嵌套 `patch`/`missing_ids`/tags 契约对齐见 REWORK §7.6 |
 | B2-05 | `operation_logs` + undo 接口 | DONE | [operation_log.py](../../server/app/services/operation_log.py)、[operations.py](../../server/app/routers/operations.py)；状态词与 Uuid 恢复见 REWORK §7.6 |
 | B2-06 | `PUT /documents/{id}/cover`，魔数校验 | DONE | [imports.py:367-420](../../server/app/routers/imports.py#L367-L420)；multipart/8 MB/JPEG·PNG·GIF·WebP 见 REWORK §7.6；撤销字节限制见 REWORK F-9 |
-| B2-07 | 重提取包装函数 + `reextract` 后台任务 | PARTIAL | 端点仍是空壳（[imports.py:294-320](../../server/app/routers/imports.py#L294-L320)）；**RD-05 → RW-401（RD-A 决策）** |
+| B2-07 | 重提取包装函数 + `reextract` 后台任务 | DONE | [content_extract.py:322](../../server/app/services/content_extract.py#L322) 预算包装（旧签名不变）+ [reextract_job.py](../../server/app/services/reextract_job.py) + [documents/reextract.py](../../server/app/routers/documents/reextract.py)；临时库探针 42 例全过，REWORK §7.7 |
 | B2-08 | 语言归一化批量动作（dry-run + confirm） | DONE | [imports.py:208-291](../../server/app/routers/imports.py#L208-L291)：dry-run/500 分批/未知值保留，REWORK §7.6 |
 | B2-09 | 孤儿文件隔离（移动不删除 + manifest） | DONE | [orphan_quarantine.py](../../server/app/services/orphan_quarantine.py)；RW-103（REWORK §7.3） |
 | B2-10 | `/import` 三步向导 UI | DONE | [import/page.tsx](../../src/app/import/page.tsx) |
@@ -131,7 +131,7 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R3 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **85 passed**、`npm run build` 成功（REWORK §7） |
+| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R4 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **85 passed**、`npm run build` 成功（REWORK §7） |
 | B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做；**RD-11 + D5 → R5** |
 | B6-03 | 数据清理（逐次授权） | DONE | [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)：4 条 operation log + 备份 `20261027_004916` |
 | B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20** |
@@ -174,11 +174,13 @@
 |---|---|---|---|---|
 | 2026-10-27 | B0–B6 执行轮 | 返工 R1 | 用户（「生成完整书面返工清单再分批修复」） | 复核发现 3 个阻断缺陷；清单见 REWORK |
 | 2026-10-27 | R1 | R2 | 用户（「你决定」） | R1 提交 `0d3217d`；R2 = RW-201/202 |
+| 2026-10-27 | R2 | R3 | 用户（按已批准清单继续） | R2 提交 `687799a`；R3 = RW-301–304 |
+| 2026-10-27 | R3 | R4 | 用户（「真实现」：RD-A 选 A） | R3 提交 `0bf75bc`；R4 = RW-401/402 |
 
 ## 任务书偏离记录
 
 | 日期 | 任务 ID | 原计划 | 实际做法 | 原因 | 用户是否知情 |
 |---|---|---|---|---|---|
 | 2026-10-26 | B3-06~B3-12 | 7 个前端任务逐条执行 | 合并为「部分」一行 | 执行轮收口 | 否（复核发现，RW-202 已恢复逐行） |
-| 2026-10-26 | B2-07 | reextract 真提取 + 状态接口 | 只写日志的空壳端点 | 执行轮简化 | 否（RD-05，待 RD-A 决策） |
+| 2026-10-26 | B2-07 | reextract 真提取 + 状态接口 | 只写日志的空壳端点 | 执行轮简化 | 否（RD-05；RW-401 已于 R4 真实现） |
 | 2026-10-27 | 数据清理 | 入库脚本可复现 | 一次性未入库代码 | 赶进度 | 否（RD-04；RW-201 已补） |
