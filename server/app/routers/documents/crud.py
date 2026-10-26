@@ -48,6 +48,7 @@ def list_documents(
     author: str | None = None,
     status: str | None = None,
     quality: str | None = None,
+    sort: str = "created_at_desc",
     include_deleted: bool = False,
     include_content: bool = False,
     limit: int | None = Query(default=None, ge=1, le=LIST_HARD_LIMIT),
@@ -71,7 +72,17 @@ def list_documents(
         status=status,
         quality=quality,
     )
-    stmt = stmt.order_by(Document.created_at.desc()).offset(offset)
+    # 排序（B3-01）：末位加 Document.id tiebreaker，避免 offset 分页重复/漏项
+    sort_map = {
+        "created_at_desc": [Document.created_at.desc(), Document.id],
+        "created_at_asc": [Document.created_at.asc(), Document.id],
+        "title_asc": [Document.title.asc(), Document.id],
+        "title_desc": [Document.title.desc(), Document.id],
+        "last_read_desc": [Document.last_read_at.desc().nullslast(), Document.id],
+        "updated_desc": [Document.updated_at.desc(), Document.id],
+    }
+    order_cols = sort_map.get(sort, sort_map["created_at_desc"])
+    stmt = stmt.order_by(*order_cols).offset(offset)
     # 未显式传 limit 时按默认页大小截断；需要全量的调用方（书架等）显式传 limit=LIST_HARD_LIMIT
     stmt = stmt.limit(limit if limit is not None else LIST_DEFAULT_LIMIT)
     docs = list(db.scalars(stmt))

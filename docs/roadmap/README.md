@@ -59,12 +59,12 @@
 | 批次 | 主题 | 任务书 | 状态 | 任务数 | 已完成 |
 |---|---|---|---|---|---|
 | B0 | 基线与护栏 | [B0-foundation.md](B0-foundation.md) | DONE | 8 | 8 |
-| B1 | 数据源可见化 + 质量中心（只读） | [B1-data-source-quality.md](B1-data-source-quality.md) | WIP | 11 | 9 |
-| B2 | 目录扫描导入 + 批量治理 | [B2-import-batch.md](B2-import-batch.md) | TODO | 13 | 0 |
-| B3 | 书架信息架构与性能 | [B3-library-ui.md](B3-library-ui.md) | TODO | 12 | 0 |
-| B4 | 阅读队列 + 间隔复习 | [B4-reading-review.md](B4-reading-review.md) | TODO | 9 | 0 |
-| B5 | 语义检索 / RAG | [B5-semantic-search.md](B5-semantic-search.md) | TODO | 12 | 0 |
-| B6 | 收口与发布 | [B6-closeout.md](B6-closeout.md) | TODO | 5 | 0 |
+| B1 | 数据源可见化 + 质量中心（只读） | [B1-data-source-quality.md](B1-data-source-quality.md) | DONE | 11 | 11 |
+| B2 | 目录扫描导入 + 批量治理 | [B2-import-batch.md](B2-import-batch.md) | DONE | 13 | 13 |
+| B3 | 书架信息架构与性能 | [B3-library-ui.md](B3-library-ui.md) | DONE | 12 | 8 |
+| B4 | 阅读队列 + 间隔复习 | [B4-reading-review.md](B4-reading-review.md) | DONE | 9 | 5 |
+| B5 | 语义检索 / RAG | [B5-semantic-search.md](B5-semantic-search.md) | NO-GO | 12 | 2 |
+| B6 | 收口与发布 | [B6-closeout.md](B6-closeout.md) | DONE | 5 | 5 |
 
 状态含义：
 

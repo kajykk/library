@@ -85,6 +85,41 @@ def abs_path(rel_path: str) -> Path:
     return target
 
 
+def import_file(
+    source: Path, doc_id: uuid.UUID, fmt: str, max_size_bytes: int
+) -> tuple[str, int, str]:
+    """流式复制源文件到 data/files，同时计算 SHA-256。
+
+    返回 (rel_path, size, sha256)。超过 max_size 抛 ValueError。
+    """
+    ext = fmt.lower().lstrip(".") or "bin"
+    if not SAFE_EXT.match(ext):
+        raise ValueError(f"Illegal extension: {fmt}")
+
+    size = source.stat().st_size
+    if size > max_size_bytes:
+        raise ValueError(f"文件超过大小限制: {size} > {max_size_bytes}")
+
+    import hashlib
+
+    rel_path = f"files/{doc_id}.{ext}"
+    target = _data_root() / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    h = hashlib.sha256()
+    try:
+        with open(source, "rb") as src, open(target, "wb") as dst:
+            while chunk := src.read(CHUNK_SIZE):
+                dst.write(chunk)
+                h.update(chunk)
+    except Exception:
+        # 复制失败删除半成品
+        target.unlink(missing_ok=True)
+        raise
+
+    return rel_path, size, h.hexdigest()
+
+
 def write_relative(rel_path: str, data: bytes) -> None:
     """按备份内相对路径写文件（带逃逸校验）"""
     target = abs_path(rel_path)

@@ -24,6 +24,8 @@ import {
 import { getBooks, getCategories, exportData, getAllFileRecords, getAllCoverRecords, initDB } from '@/lib/db';
 import { resetModeCache } from '@/lib/dataSource';
 import { useDataSourceModeInvalidator } from '@/lib/useDataSourceMode';
+import { useDataSourceStatus } from '@/lib/useDataSourceStatus';
+import { getQualitySummary, type QualitySummary } from '@/lib/api/client';
 import { ArrowLeft, Settings2, Plug, DatabaseZap, CheckCircle2, XCircle, Loader2, Download, Upload, Globe, RefreshCw, Search, ShieldCheck, Sparkles, Gauge, BookOpen } from 'lucide-react';
 
 const CHECK_LABELS: Record<string, string> = {
@@ -60,6 +62,8 @@ export default function SettingsPage() {
   const [reindexMsg, setReindexMsg] = useState<string | null>(null);
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [healthChecking, setHealthChecking] = useState(false);
+  const [qualitySummary, setQualitySummary] = useState<QualitySummary | null>(null);
+  const { status: dsStatus } = useDataSourceStatus();
 
   // running 状态经 ref 读取：interval 内部按最新状态决定是否请求，
   // 避免依赖 reindex?.running 造成 effect 反复重建、重复立即 poll
@@ -141,6 +145,13 @@ export default function SettingsPage() {
       setHealthChecking(false);
     }
   };
+
+  // 加载质量摘要（设置页健康卡片）
+  useEffect(() => {
+    if (dsStatus?.mode === 'api') {
+      getQualitySummary().then(setQualitySummary).catch(() => {});
+    }
+  }, [dsStatus?.mode]);
 
   const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
     const resp = await fetch(dataUrl);
@@ -375,6 +386,22 @@ export default function SettingsPage() {
             </button>
           </div>
           <p className="text-sm text-gray-500 mb-4">数据库、全文索引、数据目录与协作库自检</p>
+
+          {/* 数据源状态标签（B1-10） */}
+          {dsStatus && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+              <span className={`px-2 py-1 rounded-full ${dsStatus.mode === 'api' ? 'bg-green-100 text-green-700' : dsStatus.mode === 'degraded' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                数据源：{dsStatus.mode === 'api' ? 'API 已连接' : dsStatus.mode === 'degraded' ? '后端不可达' : '本地模式'}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                Token：{dsStatus.tokenConfigured ? '已配置' : '未配置'}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600 truncate max-w-xs" title={dsStatus.baseUrl}>
+                {dsStatus.baseUrl}
+              </span>
+            </div>
+          )}
+
           {systemHealth && systemHealth.status !== 'ok' && (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               系统当前不是最佳状态，建议先排查红色项，再执行索引或迁移。
@@ -403,6 +430,30 @@ export default function SettingsPage() {
             </div>
           )}
         </section>
+
+        {/* 质量中心入口（B1-10） */}
+        {qualitySummary && (
+          <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold text-gray-900">质量概况</h2>
+              <Link href="/quality" className="text-sm text-primary-600 hover:text-primary-700">进入质量中心 →</Link>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-center p-3 bg-red-50 rounded-lg">
+                <p className="text-2xl font-bold text-red-600">{qualitySummary.counts.empty_content ?? 0}</p>
+                <p className="text-xs text-gray-500 mt-1">正文为空</p>
+              </div>
+              <div className="text-center p-3 bg-amber-50 rounded-lg">
+                <p className="text-2xl font-bold text-amber-600">{qualitySummary.counts.no_cover ?? 0}</p>
+                <p className="text-xs text-gray-500 mt-1">无封面</p>
+              </div>
+              <div className="text-center p-3 bg-blue-50 rounded-lg">
+                <p className="text-2xl font-bold text-blue-600">{qualitySummary.counts.unclassified ?? 0}</p>
+                <p className="text-xs text-gray-500 mt-1">未分类</p>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* 全文索引 */}
         <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">

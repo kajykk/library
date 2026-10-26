@@ -13,6 +13,9 @@ import {
   getBookCoverUrl,
   ShelfFilter,
 } from '@/lib/dataSource';
+import type { QualityFilter } from '@/lib/api/client';
+import { getQualitySummary, type QualitySummary } from '@/lib/api/client';
+import { useDataSourceStatus } from '@/lib/useDataSourceStatus';
 import { formatFileSize, formatDate } from '@/lib/utils';
 import {
   BookOpen,
@@ -34,6 +37,9 @@ import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import BookEditModal from '@/components/BookEditModal';
 import StatisticsPanel from '@/components/StatisticsPanel';
+import OnboardingBanner from '@/components/OnboardingBanner';
+import StatePanel from '@/components/ui/StatePanel';
+import FilterChip from '@/components/ui/FilterChip';
 import { useDialog, useToast } from '@/components/ui';
 
 export default function LibraryPage() {
@@ -71,18 +77,22 @@ function LibraryPageInner() {
   const dialog = useDialog();
   const toast = useToast();
   const authorFilter = searchParams.get('author') || '';
+  const qualityFromUrl = (searchParams.get('quality') || '') as QualityFilter | '';
   // 搜索走服务端 q 参数：输入即打请求会刷屏，故 300ms 防抖后再改查询键
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [activeShelf, setActiveShelf] = useState<ShelfKey>('all');
+  const [activeQuality, setActiveQuality] = useState<QualityFilter | ''>(qualityFromUrl);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [importing, setImporting] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(true);
+  const { status: dsStatus } = useDataSourceStatus();
   const [importReport, setImportReport] = useState<{
     total: number;
     results: Array<{
@@ -110,11 +120,36 @@ function LibraryPageInner() {
   const categories = metaQuery.data?.categories ?? [];
   const dataMode = metaQuery.data?.mode ?? 'local';
   const migrationHint = metaQuery.data?.migrationHint ?? 0;
+  const isApiMode = dataMode === 'api';
+
+  // 质量摘要：仅 API 模式加载，用于 chips 计数
+  const qualityQuery = useQuery({
+    queryKey: ['quality', 'summary'],
+    queryFn: getQualitySummary,
+    enabled: isApiMode,
+    staleTime: 60_000,
+  });
+
+  // 首次引导条件：非 API 模式 + 书架为空 + 无迁移提示 + 未点过「不再提示」
+  const showOnboarding =
+    !isApiMode &&
+    metaQuery.data?.total === 0 &&
+    migrationHint === 0 &&
+    !onboardingDismissed;
+
+  useEffect(() => {
+    setOnboardingDismissed(localStorage.getItem('kb_onboarding_dismissed') === '1');
+  }, []);
+
+  const handleDismissOnboarding = () => {
+    localStorage.setItem('kb_onboarding_dismissed', '1');
+    setOnboardingDismissed(true);
+  };
 
   // 书目列表按需分页：筛选条件全部下推到后端，翻页用 offset，书架不再受单页上限截断
   const pageSize = activeShelf === 'recent' ? RECENT_SHELF_SIZE : PAGE_STEP;
   const booksQuery = useInfiniteQuery({
-    queryKey: [...LIBRARY_QUERY_KEY, 'page', searchQuery, selectedCategory, authorFilter, activeShelf],
+    queryKey: [...LIBRARY_QUERY_KEY, 'page', searchQuery, selectedCategory, authorFilter, activeShelf, activeQuality],
     queryFn: ({ pageParam }) =>
       loadLibraryPage({
         offset: pageParam,
@@ -123,6 +158,7 @@ function LibraryPageInner() {
         category: selectedCategory,
         author: authorFilter,
         shelf: activeShelf as ShelfFilter,
+        quality: activeQuality || undefined,
       }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
@@ -464,6 +500,7 @@ function LibraryPageInner() {
                 <span className="hidden sm:inline">导入书籍</span>
                 <input
                   type="file"
+                  data-import-trigger
                   accept=".epub,.pdf,.mobi,.azw3,.azw,.txt"
                   multiple
                   onChange={handleFileUpload}
@@ -693,7 +730,9 @@ function LibraryPageInner() {
           {/* Main Content */}
           <main className="flex-1">
             {showStats && <StatisticsPanel onClose={() => setShowStats(false)} />}
-            
+
+            {showOnboarding && <OnboardingBanner onDismiss={handleDismissOnboarding} />}
+
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
               <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                 <div>
@@ -724,17 +763,106 @@ function LibraryPageInner() {
                   </button>
                 </div>
               </div>
-              
-              {isLoading ? (
-                <div className="p-12 text-center text-gray-500">加载中...</div>
-              ) : importing ? (
-                <div className="p-12 text-center text-gray-500">正在导入书籍...</div>
-              ) : books.length === 0 ? (
-                <div className="p-12 text-center">
-                  <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                  <p className="text-gray-500">暂无书籍</p>
-                  <p className="text-sm text-gray-400 mt-1">点击右上角导入书籍开始添加</p>
+
+              {/* 质量筛选 chips（B1-10） */}
+              {isApiMode ? (
+                <div className="px-6 py-2 border-b border-gray-100 flex items-center gap-2 overflow-x-auto">
+                  <FilterChip
+                    label="全部"
+                    active={!activeQuality}
+                    onClick={() => setActiveQuality('')}
+                  />
+                  <FilterChip
+                    label="有质量问题"
+                    count={qualityQuery.data ? ((qualityQuery.data.counts.empty_content ?? 0) + (qualityQuery.data.counts.short_content ?? 0) + (qualityQuery.data.counts.no_cover ?? 0) + (qualityQuery.data.counts.unclassified ?? 0)) : undefined}
+                    active={activeQuality === 'issues'}
+                    onClick={() => setActiveQuality(activeQuality === 'issues' ? '' : 'issues')}
+                  />
+                  <FilterChip
+                    label="正文为空"
+                    count={qualityQuery.data?.counts.empty_content}
+                    active={activeQuality === 'empty_content'}
+                    onClick={() => setActiveQuality(activeQuality === 'empty_content' ? '' : 'empty_content')}
+                  />
+                  <FilterChip
+                    label="无封面"
+                    count={qualityQuery.data?.counts.no_cover}
+                    active={activeQuality === 'no_cover'}
+                    onClick={() => setActiveQuality(activeQuality === 'no_cover' ? '' : 'no_cover')}
+                  />
+                  <FilterChip
+                    label="需 OCR"
+                    count={qualityQuery.data?.counts.needs_ocr}
+                    active={activeQuality === 'needs_ocr'}
+                    onClick={() => setActiveQuality(activeQuality === 'needs_ocr' ? '' : 'needs_ocr')}
+                  />
+                  <FilterChip
+                    label="未分类"
+                    count={qualityQuery.data?.counts.unclassified}
+                    active={activeQuality === 'unclassified'}
+                    onClick={() => setActiveQuality(activeQuality === 'unclassified' ? '' : 'unclassified')}
+                  />
+                  <Link href="/quality" className="ml-auto text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap">
+                    质量中心 →
+                  </Link>
                 </div>
+              ) : (
+                <div className="px-6 py-2 border-b border-gray-100 text-xs text-gray-400">
+                  质量筛选需要连接后端 · <Link href="/settings" className="text-primary-500">去设置</Link>
+                </div>
+              )}
+
+              {isLoading ? (
+                <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <div key={i} className="bg-white border border-gray-200 rounded-lg overflow-hidden animate-pulse">
+                      <div className="aspect-[3/4] bg-gray-200" />
+                      <div className="p-3 space-y-2">
+                        <div className="h-4 bg-gray-200 rounded w-3/4" />
+                        <div className="h-3 bg-gray-200 rounded w-1/2" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : metaQuery.isError ? (
+                <StatePanel
+                  variant="error"
+                  title="书架元数据加载失败"
+                  description={metaQuery.error instanceof Error ? metaQuery.error.message : '未知错误'}
+                  action={{ label: '重试', onClick: () => metaQuery.refetch() }}
+                />
+              ) : booksQuery.isError ? (
+                <StatePanel
+                  variant="error"
+                  title="书目加载失败"
+                  description={booksQuery.error instanceof Error ? booksQuery.error.message : '未知错误'}
+                  action={{ label: '重试', onClick: () => booksQuery.refetch() }}
+                />
+              ) : importing ? (
+                <StatePanel variant="loading" title="正在导入书籍..." />
+              ) : books.length === 0 ? (
+                searchQuery || activeQuality || selectedCategory || activeShelf !== 'all' ? (
+                  <StatePanel
+                    variant="empty"
+                    title="没有符合条件的书"
+                    description="试试调整搜索关键词或筛选条件"
+                    action={{ label: '清除筛选', onClick: () => { setSearchInput(''); setSearchQuery(''); setActiveQuality(''); setSelectedCategory(null); setActiveShelf('all'); } }}
+                  />
+                ) : isApiMode ? (
+                  <StatePanel
+                    variant="empty"
+                    title="书架还是空的"
+                    description="导入 EPUB/PDF，或到导入中心扫描目录"
+                    action={{ label: '导入书籍', onClick: () => (document.querySelector('[data-import-trigger]') as HTMLInputElement)?.click() }}
+                  />
+                ) : (
+                  <StatePanel
+                    variant="empty"
+                    title="本地书架没有书"
+                    description="连接后端或先导入本地文件"
+                    action={{ label: '去设置', onClick: () => router.push('/settings') }}
+                  />
+                )
               ) : viewMode === 'grid' ? (
                 <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                   {books.map(book => (

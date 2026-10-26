@@ -17,10 +17,13 @@ from .routers import (
     collections,
     documents,
     export,
+    imports,
     links,
     migrate,
+    operations,
     quality,
     reading_records,
+    review,
     search,
     stats,
     tags,
@@ -106,6 +109,9 @@ def create_app() -> FastAPI:
     app.include_router(clip.router, prefix="/api", dependencies=[Depends(verify_token)])
     app.include_router(export.router, prefix="/api", dependencies=[Depends(verify_token)])
     app.include_router(quality.router, prefix="/api", dependencies=[Depends(verify_token)])
+    app.include_router(operations.router, prefix="/api", dependencies=[Depends(verify_token)])
+    app.include_router(imports.router, prefix="/api", dependencies=[Depends(verify_token)])
+    app.include_router(review.router, prefix="/api", dependencies=[Depends(verify_token)])
 
     app.mount("/ws/collab", collab_asgi)
 

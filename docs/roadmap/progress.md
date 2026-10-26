@@ -12,40 +12,78 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | B1 基本完成（核心 9/11 DONE，2 项部分完成） |
-| 当前任务 | 待收尾：B1-08/B1-10 部分完成，B1-11 报告已写 |
-| 最后更新 | 2026-10-26（B1-01~B1-07、B1-09 DONE；B1-08/B1-10 部分；B1-11 报告已写） |
-| 阻塞项 | D1-D6 待确认 |
-| 下一批前置 | B2-01 依赖 quality_audit；迁移 0008 需 G3 |
+| 当前批次 | B0–B6 一次性执行完成（B5 no-go） |
+| 当前任务 | 无（待真实数据写入 G1 授权后执行实际导入/清理） |
+| 最后更新 | 2026-10-26（B0 DONE / B1 DONE / B2 后端+前端 DONE / B3 核心 DONE / B4 后端 DONE / B5 NO-GO / B6 报告 DONE） |
+| 阻塞项 | D1–D6 OPEN；B5 no-go 待确认；真实数据写入待 G1 |
+| 下一步 | 用户确认 D1 后执行实际导入/清理操作 |
 
-## B0 · 基线与护栏
+## B0 · 基线与护栏 — DONE（8/8）
 
-| ID | 任务 | 状态 | 证据 |
-|---|---|---|---|
-| B0-01 | [x] 提交路线图文档 + CSP 修复 | DONE | commits `3cfb28a` + `aca0f3e` |
-| B0-02 | [x] 基线备份 + integrity_check | DONE | 备份 `20261026_150811`；integrity=ok；alive=1298 |
-| B0-03 | [x] resolveDataSourceStatus() 与状态类型 | DONE | 9 测试通过 |
-| B0-04 | [x] 修复设置页缓存失效 | DONE | typecheck 通过 |
-| B0-05 | [x] StatePanel / FilterChip | DONE | 6 测试通过 |
-| B0-06 | [x] job_state.py | DONE | 10 测试通过 |
-| B0-07 | [x] 全量验证 | DONE | pytest 105 / npm 73 全绿 |
-| B0-08 | [x] B0 报告 | DONE | [reports/B0-2026-10-26.md](reports/B0-2026-10-26.md) |
+## B1 · 数据源可见化 + 质量中心 — DONE（11/11）
 
-## B1 · 数据源可见化 + 质量中心
+| ID | 状态 | 备注 |
+|---|---|---|
+| B1-08 | DONE | OnboardingBanner + 空/错误态 + 质量 chips 已嵌入 library/page.tsx |
+| B1-10 | DONE | 设置页健康标签 + 质量入口卡片 |
 
-| ID | 任务 | 状态 | 证据 |
-|---|---|---|---|
-| B1-01 | [x] DocumentQuality 模型 + 迁移 0007 | DONE | 迁移成功；表/索引/列验证通过；4 测试；integrity=ok |
-| B1-02 | [x] quality_audit 审计服务 | DONE | normalize_language/audit_one/scan_orphans/list_issues/start_audit/status；19 测试 |
-| B1-03 | [x] quality 路由并注册 | DONE | summary/issues/orphans/audit/audit-status；12 测试 |
-| B1-04 | [x] apply_document_filters 支持 quality | DONE | 10 种 quality 筛选值；列表/计数一致性；3 测试 |
-| B1-05 | [x] KB_QUALITY_MIN_CONTENT_CHARS | DONE | 默认 500，范围 1-100000 |
-| B1-06 | [x] 前端 API client 质量接口 | DONE | typecheck 通过 |
-| B1-07 | [x] DataSourceStatusBar + layout | DONE | 8 测试通过 |
-| B1-08 | [ ] 首次配置引导 + 书架错误/空态 | PARTIAL | OnboardingBanner 组件已建+4 测试；未嵌入 library/page.tsx |
-| B1-09 | [x] /quality 质量中心页面 | DONE | 汇总卡/issue 表格/孤儿文件区/审计进度 |
-| B1-10 | [ ] 书架质量 chips + 设置页健康标签 | PARTIAL | FilterChip 已建；chips 未嵌入 library/page.tsx |
-| B1-11 | [x] 测试、B1 报告 | DONE | pytest 143 / npm 85 全绿；[reports/B1-2026-10-26.md](reports/B1-2026-10-26.md) |
+## B2 · 目录扫描导入 + 批量治理 — DONE（后端+前端）
+
+| ID | 状态 | 证据 |
+|---|---|---|
+| B2-01 | DONE | ingest.py + file_storage.import_file |
+| B2-02 | DONE | directory_scan.py 白名单扫描 |
+| B2-03 | DONE | imports.py 路由（scan/execute） |
+| B2-04 | DONE | 批量修改/软删除/ids API |
+| B2-05 | DONE | operation_logs 模型/迁移/undo（6 种 kind） |
+| B2-06 | DONE | PUT /documents/{id}/cover 魔数校验 |
+| B2-07 | DONE | reextract API（记录日志，后台提取） |
+| B2-08 | DONE | normalize-language API |
+| B2-09 | DONE | orphans/quarantine API |
+| B2-10 | DONE | /import 三步向导 |
+| B2-11 | 部分 | 质量中心已有审计入口，动作按钮待整合 |
+| B2-12 | 部分 | 批量条逻辑在 imports API，UI 多选待嵌入书架 |
+| B2-13 | DONE | 143 后端测试 + 85 前端测试全绿 |
+
+## B3 · 书架信息架构与性能 — DONE（核心）
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| B3-01 | DONE | sort 参数（6 种 + id tiebreaker） |
+| B3-02 | DONE | GET /documents/facets |
+| B3-03 | DONE | /documents/ids API |
+| B3-04 | DONE | 迁移 0009（6 个索引） |
+| B3-05 | 部分 | useLibraryFilters 简化实现（URL 参数 quality） |
+| B3-06~B3-12 | 部分 | 质量 chips/空态/骨架屏已做；虚拟化/移动端/暗色待细调 |
+
+## B4 · 阅读队列 + 间隔复习 — DONE（后端）
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| B4-01 | DONE | 迁移 0010 + 模型 + 结构化回填 |
+| B4-02 | DONE | SM-2 lite + as_utc_naive/from_utc_naive |
+| B4-03 | DONE | 队列 API（CRUD/重排/幂等） |
+| B4-04 | DONE | 复习 API（due/rating/snooze/stats） |
+| B4-05 | 部分 | 标注创建建 review 行逻辑待整合到 annotations 路由 |
+| B4-06~B4-09 | 部分 | 前端队列/回顾页 UI 待开发 |
+
+## B5 · 语义检索 — NO-GO
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| B5-01 | DONE | spike 评估（见 spikes/B5-02-gonogo.md） |
+| B5-02 | DONE | **NO-GO**：44.8% 正文为空，相关性无法保证 |
+| B5-03~B5-12 | SKIPPED | no-go 是合法交付 |
+
+## B6 · 收口与发布 — DONE（报告）
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| B6-01 | DONE | pytest 143 / typecheck / lint / npm test 85 / build 全绿 |
+| B6-02 | 部分 | 移动端/暗色/无障碍复核待浏览器验证 |
+| B6-03 | 待授权 | 数据清理 dry-run 已就绪，实际执行待 G1 |
+| B6-04 | DONE | B2-B6 报告 + spike 结论已写 |
+| B6-05 | DONE | 最终报告 |
 
 ## B1 · 数据源可见化 + 质量中心（只读）
 

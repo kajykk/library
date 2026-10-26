@@ -184,3 +184,56 @@ class DocumentQuality(Base):
     issues: Mapped[list] = mapped_column(JSONVariant, default=list)
     scan_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class OperationLog(Base):
+    """批量操作审计与撤销（B2-05）。"""
+
+    __tablename__ = "operation_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="applied", index=True)
+    document_ids: Mapped[list] = mapped_column(JSONVariant, default=list)
+    before_state: Mapped[dict] = mapped_column(JSONVariant, default=dict)
+    after_state: Mapped[dict] = mapped_column(JSONVariant, default=dict)
+    summary: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    undoable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReadingQueueItem(Base):
+    """阅读队列（B4）。一本书最多一个队列项。"""
+
+    __tablename__ = "reading_queue_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("documents.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active/paused/done
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AnnotationReview(Base):
+    """标注间隔复习（B4）。一条标注一行。"""
+
+    __tablename__ = "annotation_reviews"
+
+    annotation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("annotations.id", ondelete="CASCADE"), primary_key=True
+    )
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    interval_days: Mapped[int] = mapped_column(Integer, default=0)
+    ease: Mapped[float] = mapped_column(Float, default=2.5)
+    repetitions: Mapped[int] = mapped_column(Integer, default=0)
+    lapses: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active/suspended
+    last_rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
