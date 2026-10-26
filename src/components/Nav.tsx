@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { History, Library, NotebookPen, Search, Settings, Share2, ShieldCheck, Upload } from 'lucide-react';
+import { History, Library, ListOrdered, NotebookPen, Search, Settings, Share2, ShieldCheck, Upload } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 
 const LINKS = [
   { href: '/library', label: '书架', icon: Library },
   { href: '/import', label: '导入', icon: Upload },
   { href: '/review', label: '回顾', icon: History },
+  { href: '/queue', label: '队列', icon: ListOrdered },
   { href: '/notes', label: '笔记', icon: NotebookPen },
   { href: '/graph', label: '图谱', icon: Share2 },
   { href: '/search', label: '检索', icon: Search },

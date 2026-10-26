@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R5（最小集）完成**（2026-10-27）；RW-504/505 待 RD-B |
-| 当前任务 | RD-B 决策；然后 R5 剩余 RW-504/505 |
-| 最后更新 | 2026-10-27（R5 导航入口 + 本地日界/仅今天 + 封面缓存） |
-| 阻塞项 | RD-B（R5 前端范围）、RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围 |
-| 下一步 | RD-B → RW-504/505 → R6（测试/限流）→ R7（B5 重评） |
+| 当前批次 | **返工 R1–R5 完成**（2026-10-27；RW-504/505 按 RD-B「补最小版」收尾） |
+| 当前任务 | R5 验收；随后 R6（测试/限流）→ R7（B5 重评） |
+| 最后更新 | 2026-10-27（RW-504 筛选 URL 化 + facets、RW-505 队列/复习前端 + 标注挂钩） |
+| 阻塞项 | RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围；R5 等待用户验收与提交确认 |
+| 下一步 | 用户验收 R5 → 单独提交 → RW-601/602 → RW-701 |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -75,28 +75,28 @@
 | B2-08 | 语言归一化批量动作（dry-run + confirm） | DONE | [imports.py:208-291](../../server/app/routers/imports.py#L208-L291)：dry-run/500 分批/未知值保留，REWORK §7.6 |
 | B2-09 | 孤儿文件隔离（移动不删除 + manifest） | DONE | [orphan_quarantine.py](../../server/app/services/orphan_quarantine.py)；RW-103（REWORK §7.3） |
 | B2-10 | `/import` 三步向导 UI | DONE | [import/page.tsx](../../src/app/import/page.tsx) |
-| B2-11 | 质量中心动作 UI（预览/确认/日志/撤销） | PARTIAL | [quality/page.tsx:314](../../src/app/quality/page.tsx#L314) 仍写「隔离操作将在 B2 批次提供」；未纳入 R5 最小集，随 **RD-B** 范围决策处理 |
-| B2-12 | 书架多选与批量操作条 | PARTIAL | 全仓无 `useLibrarySelection`；**RD-11 → RW-504（RD-B）** |
+| B2-11 | 质量中心动作 UI（预览/确认/日志/撤销） | PARTIAL | [quality/page.tsx:314](../../src/app/quality/page.tsx#L314) 仍写「隔离操作将在 B2 批次提供」；RD-B 最小版未含，留待后续迭代 |
+| B2-12 | 书架多选与批量操作条 | PARTIAL | 全仓无 `useLibrarySelection`；RD-B 最小版未含，留待后续迭代 |
 | B2-13 | 测试、Downloads 扫描复核、B2 报告 | DONE | 后端 195 passed（R3 后）、前端 85 passed；[reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) |
 
-## B3 · 书架信息架构与性能 — PARTIAL（5/12）
+## B3 · 书架信息架构与性能 — PARTIAL（6/12）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
 | B3-01 | `GET /documents` 增加 `sort` | DONE | [crud.py:53](../../server/app/routers/documents/crud.py#L53)：7 键白名单、未知 400，契约对齐见 REWORK §7.6 |
 | B3-02 | `GET /documents/facets` 聚合 | DONE | [facets.py](../../server/app/routers/documents/facets.py)；原崩溃 **RD-01 已由 RW-101 修复**（REWORK §7.1） |
-| B3-03 | 书架「全选筛选结果」接入 `/documents/ids` | DONE | [documents/ids.py](../../server/app/routers/documents/ids.py)：全筛选 + 5000/`truncated`（REWORK §7.6）；前端接入随 RW-504 |
+| B3-03 | 书架「全选筛选结果」接入 `/documents/ids` | PARTIAL | 后端已就绪：[documents/ids.py](../../server/app/routers/documents/ids.py)（全筛选 + 5000/`truncated`）；书架「全选筛选结果」UI 未接（RD-B 最小版未含 `useLibrarySelection`），留待后续批次 |
 | B3-04 | 书架相关索引迁移 | DONE | `0009_library_indexes`；partial index 问题见 **RD-14** |
-| B3-05 | `useLibraryFilters`：筛选状态 URL 化 | PARTIAL | 只有 `quality` 一个 URL 参数（[library/page.tsx:80](../../src/app/library/page.tsx#L80)）；**RD-11 → RW-504** |
-| B3-06 | 分类侧栏：搜索/折叠/隐藏 0 本/置顶/重命名 | PARTIAL | 无分类侧栏组件；**RD-11 → RW-504（RD-B）** |
-| B3-07 | 工具栏：排序、活跃筛选 chips、清除全部 | PARTIAL | 现有 shelf/quality chips，无统一工具栏与「清除全部」；**RD-11 → RW-504** |
-| B3-08 | `BookCard` + `BookCover`（独立封面加载） | PARTIAL | **封面部分已完成（RW-503）**：[BookCover.tsx](../../src/components/BookCover.tsx) + [coverCache.ts](../../src/lib/coverCache.ts)（LRU 200/引用计数/inflight 去重），页面级 `coverUrls` 已删（REWORK §7.8）；未拆 `BookCard`、无 60s 负缓存（F-11），随 **RD-B** 决定 |
-| B3-09 | 无限滚动 + 虚拟化 + 预取 | PARTIAL | 虚拟化仅笔记页（`@tanstack/react-virtual`）；书架未接；**RD-11 → RW-504（RD-B）** |
+| B3-05 | `useLibraryFilters`：筛选状态 URL 化 | DONE | [libraryFilters.ts](../../src/lib/libraryFilters.ts#L80) 解析/序列化 + [useLibraryFilters.ts](../../src/lib/useLibraryFilters.ts#L37)（`replace` + 300ms 防抖 + localStorage 视图偏好）；深链实测见 REWORK §7.9 |
+| B3-06 | 分类侧栏：搜索/折叠/隐藏 0 本/置顶/重命名 | PARTIAL | RW-504 只补了 facets 侧栏（格式/语言/标签计数与选中态）；分类搜索/折叠/隐藏 0 本/置顶/重命名均未做，留给后续迭代（RD-B 最小版范围，REWORK §7.9） |
+| B3-07 | 工具栏：排序、活跃筛选 chips、清除全部 | DONE | [library/page.tsx:868](../../src/app/library/page.tsx#L868) 排序、[:880](../../src/app/library/page.tsx#L880) 网格/列表、[:904](../../src/app/library/page.tsx#L904) chips + 清除全部（保留排序/视图偏好）；REWORK §7.9 |
+| B3-08 | `BookCard` + `BookCover`（独立封面加载） | PARTIAL | **封面部分已完成（RW-503）**：[BookCover.tsx](../../src/components/BookCover.tsx) + [coverCache.ts](../../src/lib/coverCache.ts)（LRU 200/引用计数/inflight 去重），页面级 `coverUrls` 已删（REWORK §7.8）；按 RD-B 不拆 `BookCard`；无 60s 负缓存（F-11） |
+| B3-09 | 无限滚动 + 虚拟化 + 预取 | PARTIAL | 无限滚动已有；虚拟化仅笔记页（`@tanstack/react-virtual`），书架未接；按 RD-B 最小版不做书架全量虚拟化（REWORK §7.9） |
 | B3-10 | 骨架屏/空态/错误态 | DONE | [library/page.tsx:818](../../src/app/library/page.tsx#L818) 骨架；[:847-861](../../src/app/library/page.tsx#L847-L861) 空态 |
 | B3-11 | 移动端抽屉/导航、暗色、无障碍 | PARTIAL | **导航入口与窄屏图标态已由 RW-501 补齐**（`aria-label/title`，REWORK §7.8）；抽屉、暗色范围（D5）仍缺 |
-| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；R5 新增 Nav/coverCache/datetime 单测；仍无 BookCard 组件测试与 B3 报告；**RW-601** |
+| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；R5 新增 Nav/coverCache/datetime/queueReviewApi/dataSourceAutoAdd 单测；仍无 BookCard/书架组件测试与 B3 报告；**RW-601** |
 
-## B4 · 阅读队列 + 间隔复习 — PARTIAL（4/9）
+## B4 · 阅读队列 + 间隔复习 — PARTIAL（6/9）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
@@ -104,11 +104,11 @@
 | B4-02 | `review_scheduler.py` SM-2 lite 纯函数 | DONE | [review_scheduler.py](../../server/app/services/review_scheduler.py)；`now` 注入问题见 **RD-18 → RW-602** |
 | B4-03 | 阅读队列 API（增删改/重排/幂等） | DONE | [review.py:180-379](../../server/app/routers/review.py#L180-L379)：`/reading-queue`、auto-add/next、`ordered_ids`（REWORK §7.6） |
 | B4-04 | 复习 API（due/rating/snooze/stats） | DONE | [review.py:384-607](../../server/app/routers/review.py#L384-L607)：四档评分、highlight/note 过滤、`preview`、5 字段 stats（REWORK §7.6） |
-| B4-05 | 标注创建时建 review 行 | PARTIAL | `ensure_review_row` 已存在但只在 `rate` 时按需建行（[review_service.py:17](../../server/app/services/review_service.py#L17)），标注创建挂钩仍缺；**RD-09 → RW-505** |
-| B4-06 | 队列页/回顾页 Tab + 队列排序 UI | PARTIAL | 只有 `/review` 页，无 `/queue` 页；**RD-11 → RW-505** |
-| B4-07 | 复习卡评分、快捷键、间隔预览 | PARTIAL | `/review` 页无评分 UI（grep 无 again/hard/good/easy）；**RD-11 → RW-505** |
+| B4-05 | 标注创建时建 review 行 | DONE | [review_service.py:19](../../server/app/services/review_service.py#L19) `ensure_review_row`（highlight/note、存活文档、幂等）+ [annotations.py:104](../../server/app/routers/annotations.py#L104) 创建后挂钩，失败只回滚复习行；后端 9 例（REWORK §7.9） |
+| B4-06 | 队列页/回顾页 Tab + 队列排序 UI | PARTIAL | [queue/page.tsx:60](../../src/app/queue/page.tsx#L60) 两 Tab + 上移/下移/状态动作已完成（同优先级内，F-12）；拖拽排序未做 |
+| B4-07 | 复习卡评分、快捷键、间隔预览 | DONE | [queue/page.tsx:464](../../src/app/queue/page.tsx#L464) ReviewTab：两步揭示、四档评分用服务端 `preview`、1–4/S/←/→/Esc、乐观隐藏与回滚（REWORK §7.9） |
 | B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | **前两项已完成（RW-502）**：[datetime.ts](../../src/lib/datetime.ts) + `since` 服务端过滤（REWORK §7.8）；`buildDailyNoteContent` 仍只有两参，「今日复习」段未接入（B4-08 剩余项，未纳入返工清单） |
-| B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py` 等存在；前端队列/复习测试缺失；**RW-601** |
+| B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py`、`test_annotation_review_hook.py` 等存在；前端 [queueReviewApi.test.ts](../../src/lib/__tests__/queueReviewApi.test.ts) 13 例 + [dataSourceAutoAdd.test.ts](../../src/lib/__tests__/dataSourceAutoAdd.test.ts) 6 例，但队列/复习页面组件测试仍缺；**RW-601** |
 
 ## B5 · 语义检索 / RAG — NO-GO（1/12 + 10 SKIPPED）
 
@@ -131,8 +131,8 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R5 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **97 passed (17 files)**、`npm run build` 成功（REWORK §7） |
-| B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做；**RD-11 + D5 → R5** |
+| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R5 收尾后：后端 **204 passed**、`npm run typecheck` 无错误、`npm test` **143 passed (22 files)**、`npm run build` 成功（REWORK §7.9） |
+| B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做全量复核；R5 只覆盖队列/书架键盘与 `aria` 的可访问名，移动端抽屉、暗色范围（D5）与性能记录仍缺 |
 | B6-03 | 数据清理（逐次授权） | DONE | [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)：4 条 operation log + 备份 `20261027_004916` |
 | B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20** |
 | B6-05 | 最终报告与 CI 确认 | PARTIAL | 报告已有；执行轮 6 个提交仍未推送，CI 未确认；**RD-E / G4** |
@@ -177,6 +177,7 @@
 | 2026-10-27 | R2 | R3 | 用户（按已批准清单继续） | R2 提交 `687799a`；R3 = RW-301–304 |
 | 2026-10-27 | R3 | R4 | 用户（「真实现」：RD-A 选 A） | R3 提交 `0bf75bc`；R4 = RW-401/402 |
 | 2026-10-27 | R4 | R5（最小集） | 用户（「继续」，按 REWORK 默认建议） | R4 提交 `a8cffbf`；R5 = RW-501/502/503；RW-504/505 等 RD-B |
+| 2026-10-27 | R5（最小集） | R5 收尾（RW-504/505） | 用户（「补 504/505 最小版（推荐）」） | RD-B 定为最小版；RW-504/505 已完成，待验收后单独提交（G4 前不推送） |
 
 ## 任务书偏离记录
 
@@ -185,3 +186,5 @@
 | 2026-10-26 | B3-06~B3-12 | 7 个前端任务逐条执行 | 合并为「部分」一行 | 执行轮收口 | 否（复核发现，RW-202 已恢复逐行） |
 | 2026-10-26 | B2-07 | reextract 真提取 + 状态接口 | 只写日志的空壳端点 | 执行轮简化 | 否（RD-05；RW-401 已于 R4 真实现） |
 | 2026-10-27 | 数据清理 | 入库脚本可复现 | 一次性未入库代码 | 赶进度 | 否（RD-04；RW-201 已补） |
+| 2026-10-27 | B3-06/B3-08/B3-09 | 分类侧栏增强、BookCard 拆分、书架虚拟化 | 只做 facets 侧栏 + 独立 BookCover；不拆 BookCard、不接虚拟化 | RD-B 选「补 504/505 最小版」 | 是（用户选择） |
+| 2026-10-27 | B4-06 | 队列排序（含拖拽） | 上移/下移 + 状态动作；拖拽未做 | RD-B 最小版 | 是（用户选择） |

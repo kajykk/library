@@ -10,7 +10,7 @@ export default function BookCover({
   book,
   variant,
 }: {
-  book: Book;
+  book: Pick<Book, 'id' | 'title' | 'coverPath'>;
   variant: 'grid' | 'list';
 }) {
   const url = useCoverUrl(book.id, Boolean(book.coverPath), getBookCoverUrl);

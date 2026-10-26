@@ -6,6 +6,7 @@
 """
 
 from datetime import datetime, timezone
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,10 +17,12 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Annotation, Document
 from ..schemas import AnnotationCreate, AnnotationOut, AnnotationUpdate, DocumentOut
+from ..services.review_service import ensure_review_row
 from ..services.sql_utils import escape_like
 from .documents import _snapshot_version, sync_mention_links
 
 router = APIRouter(prefix="/annotations", tags=["annotations"])
+logger = logging.getLogger(__name__)
 
 
 class AnnotationSearchHit(BaseModel):
@@ -97,6 +100,13 @@ def create_annotation(payload: AnnotationCreate, db: Session = Depends(get_db)):
     obj = Annotation(**payload.model_dump())
     db.add(obj)
     db.commit()
+    # 复习行是派生数据：失败只记日志，不能让划线本身回滚
+    try:
+        ensure_review_row(db, obj)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("创建复习行失败（标注已保存）: %s", obj.id, exc_info=True)
     return obj
 
 

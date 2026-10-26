@@ -7,15 +7,26 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from ..models import Annotation, AnnotationReview, utcnow
+from ..models import Annotation, AnnotationReview, Document, utcnow
 from .review_scheduler import sm2_lite
 
 # 契约第 7 节的四档评分 → sm2_lite 的数值档位
 RATING_VALUES = {"again": 1, "hard": 2, "good": 3, "easy": 4}
 
+REVIEWABLE_ANNOTATION_TYPES = ("highlight", "note")
 
-def ensure_review_row(db: Session, annotation: Annotation) -> AnnotationReview:
-    """取复习行；不存在则按初始状态建一条（0010 之前或迁移后新增的标注）。"""
+
+def ensure_review_row(db: Session, annotation: Annotation) -> AnnotationReview | None:
+    """取复习行；不存在则按初始状态建一条（0010 之前或迁移后新增的标注）。
+
+    书签与已软删除文档的标注不参与复习，返回 None。幂等：已有行原样返回。
+    """
+    if annotation.type not in REVIEWABLE_ANNOTATION_TYPES:
+        return None
+    document = db.get(Document, annotation.document_id)
+    if document is None or document.deleted_at is not None:
+        return None
+
     review = db.get(AnnotationReview, annotation.id)
     if review is not None:
         return review

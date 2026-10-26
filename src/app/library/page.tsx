@@ -1,19 +1,19 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { Book, Category, exportData, importData } from '@/lib/db';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  loadLibraryFacets,
   loadLibraryMeta,
   loadLibraryPage,
   importBookFile,
   deleteBookCompletely,
   addCategoryByName,
   deleteCategoryAndReset,
-  ShelfFilter,
 } from '@/lib/dataSource';
-import type { QualityFilter } from '@/lib/api/client';
-import { getQualitySummary, type QualitySummary } from '@/lib/api/client';
+import { getQualitySummary } from '@/lib/api/client';
+import type { FacetItem, LibrarySort } from '@/lib/api/client';
 import { useDataSourceStatus } from '@/lib/useDataSourceStatus';
 import { formatFileSize, formatDate } from '@/lib/utils';
 import {
@@ -31,7 +31,7 @@ import {
   Eye
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import BookCover from '@/components/BookCover';
 import BookEditModal from '@/components/BookEditModal';
 import StatisticsPanel from '@/components/StatisticsPanel';
@@ -39,6 +39,16 @@ import OnboardingBanner from '@/components/OnboardingBanner';
 import StatePanel from '@/components/ui/StatePanel';
 import FilterChip from '@/components/ui/FilterChip';
 import { useDialog, useToast } from '@/components/ui';
+import { useLibraryFilters } from '@/lib/useLibraryFilters';
+import {
+  DEFAULT_FILTERS,
+  SHELF_LABELS,
+  SORT_LABELS,
+  buildActiveChips,
+  buildApiParams,
+  type LibraryFilters,
+} from '@/lib/libraryFilters';
+import { languageLabel } from '@/lib/language';
 
 export default function LibraryPage() {
   return (
@@ -54,35 +64,36 @@ const LIBRARY_QUERY_KEY = ['documents', 'library'] as const;
 const SUPPORTED_FORMATS = ['epub', 'pdf', 'mobi', 'azw3', 'azw', 'txt'];
 
 // 智能书架（规则视图）：在读 / 未读 / 读完 / 最近添加
-type ShelfKey = 'all' | 'reading' | 'unread' | 'done' | 'recent';
 const RECENT_SHELF_SIZE = 20;
-const SHELF_LABELS: Record<ShelfKey, string> = {
-  all: '全部',
-  reading: '在读',
-  unread: '未读',
-  done: '读完',
-  recent: '最近添加',
-};
 
 // 书架每次向后端取 60 本（而不是先拉整库再前端切片），滚动到底再取下一页
 const PAGE_STEP = 60;
 const LIBRARY_META_QUERY_KEY = [...LIBRARY_QUERY_KEY, 'meta'] as const;
 
+function limitFacetItems(items: FacetItem[], active: string | null, limit: number): FacetItem[] {
+  const head = items.slice(0, limit);
+  if (!active || head.some((item) => item.value === active)) return head;
+  const selected = items.find((item) => item.value === active);
+  return selected ? [...head, selected] : head;
+}
+
 function LibraryPageInner() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const searchParams = useSearchParams();
   const dialog = useDialog();
   const toast = useToast();
-  const authorFilter = searchParams.get('author') || '';
-  const qualityFromUrl = (searchParams.get('quality') || '') as QualityFilter | '';
-  // 搜索走服务端 q 参数：输入即打请求会刷屏，故 300ms 防抖后再改查询键
-  const [searchInput, setSearchInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [activeShelf, setActiveShelf] = useState<ShelfKey>('all');
-  const [activeQuality, setActiveQuality] = useState<QualityFilter | ''>(qualityFromUrl);
+  const { status: dsStatus } = useDataSourceStatus();
+  const dataSourceMode = dsStatus && dsStatus.mode !== 'api' ? 'local' : 'api';
+  const {
+    filters,
+    searchInput,
+    setSearchInput,
+    setFilter,
+    patchFilters,
+    clearFilters,
+    isFiltered,
+    droppedFilters,
+  } = useLibraryFilters(dataSourceMode);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -90,7 +101,6 @@ function LibraryPageInner() {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [importing, setImporting] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(true);
-  const { status: dsStatus } = useDataSourceStatus();
   const [importReport, setImportReport] = useState<{
     total: number;
     results: Array<{
@@ -103,11 +113,6 @@ function LibraryPageInner() {
     startedAt: number;
     finishedAt: number | null;
   } | null>(null);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 300);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
 
   // 侧栏（分类/智能书架计数）走一次性聚合：不随分页变化
   const metaQuery = useQuery({
@@ -127,6 +132,24 @@ function LibraryPageInner() {
     staleTime: 60_000,
   });
 
+  // 筛选变化滚回顶部；排序/视图变化保持当前位置
+  const scrollKey = JSON.stringify([
+    filters.q,
+    filters.shelf,
+    filters.category,
+    filters.author,
+    filters.quality,
+    filters.format,
+    filters.language,
+    filters.tag,
+  ]);
+  const lastScrollKey = useRef(scrollKey);
+  useEffect(() => {
+    if (lastScrollKey.current === scrollKey) return;
+    lastScrollKey.current = scrollKey;
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [scrollKey]);
+
   // 首次引导条件：非 API 模式 + 书架为空 + 无迁移提示 + 未点过「不再提示」
   const showOnboarding =
     !isApiMode &&
@@ -144,22 +167,62 @@ function LibraryPageInner() {
   };
 
   // 书目列表按需分页：筛选条件全部下推到后端，翻页用 offset，书架不再受单页上限截断
-  const pageSize = activeShelf === 'recent' ? RECENT_SHELF_SIZE : PAGE_STEP;
+  const pageSize = filters.shelf === 'recent' ? RECENT_SHELF_SIZE : PAGE_STEP;
+  const filterParams = buildApiParams(filters);
+  const querySignature = JSON.stringify([
+    filterParams,
+    filters.category,
+    filters.shelf,
+    pageSize,
+    dataMode,
+  ]);
   const booksQuery = useInfiniteQuery({
-    queryKey: [...LIBRARY_QUERY_KEY, 'page', searchQuery, selectedCategory, authorFilter, activeShelf, activeQuality],
+    queryKey: [...LIBRARY_QUERY_KEY, 'page', querySignature],
     queryFn: ({ pageParam }) =>
       loadLibraryPage({
         offset: pageParam,
         limit: pageSize,
-        search: searchQuery,
-        category: selectedCategory,
-        author: authorFilter,
-        shelf: activeShelf as ShelfFilter,
-        quality: activeQuality || undefined,
+        search: filters.q,
+        category: filters.category,
+        author: filters.author,
+        shelf: filters.shelf,
+        quality: filters.quality ?? undefined,
+        sort: filters.sort,
+        format: filters.format,
+        language: filters.language,
+        tag: filters.tag,
       }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * pageSize : undefined,
+  });
+
+  // 分面：每维由后端排除自身条件，因此请求要带上全部当前筛选
+  const facetKey = JSON.stringify([
+    filters.q,
+    filters.shelf,
+    filters.category,
+    filters.author,
+    filters.quality,
+    filters.format,
+    filters.language,
+    filters.tag,
+  ]);
+  const facetsQuery = useQuery({
+    queryKey: ['documents', 'facets', facetKey],
+    queryFn: () =>
+      loadLibraryFacets({
+        search: filters.q,
+        category: filters.category,
+        author: filters.author,
+        shelf: filters.shelf,
+        quality: filters.quality ?? undefined,
+        format: filters.format,
+        language: filters.language,
+        tag: filters.tag,
+      }),
+    enabled: isApiMode,
+    staleTime: 30_000,
   });
 
   // offset 分页在数据变动时可能返回重复项，按 id 去重保证 key 唯一
@@ -189,15 +252,34 @@ function LibraryPageInner() {
       unread: base?.shelfCounts.unread ?? 0,
       done: base?.shelfCounts.done ?? 0,
       recent: Math.min(RECENT_SHELF_SIZE, total),
-    } as Record<ShelfKey, number>;
+    } as Record<keyof typeof SHELF_LABELS, number>;
   }, [metaQuery.data]);
   const categoryCounts = metaQuery.data?.categoryCounts;
+  const activeChips = buildActiveChips(filters);
+  const hasNonShelfFilters = Boolean(
+    filters.q ||
+      filters.category ||
+      filters.author ||
+      filters.quality ||
+      filters.format ||
+      filters.language ||
+      filters.tag,
+  );
+
+  const removeFilter = (key: keyof LibraryFilters) => {
+    patchFilters({ [key]: DEFAULT_FILTERS[key] } as Partial<LibraryFilters>);
+  };
 
   const loadMoreBooks = () => {
     if (!booksQuery.isFetchingNextPage) void booksQuery.fetchNextPage();
   };
 
-  const refetchLibrary = () => queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY });
+  const refetchLibrary = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: ['documents', 'facets'] }),
+    ]);
+  };
 
   const runImport = async (files: File[], categoryOf: (file: File) => string) => {
     setImporting(true);
@@ -248,7 +330,7 @@ function LibraryPageInner() {
     const files = e.target.files;
     if (!files) return;
     try {
-      await runImport(Array.from(files), () => selectedCategory || '未分类');
+      await runImport(Array.from(files), () => filters.category || '未分类');
     } finally {
       e.target.value = '';
     }
@@ -265,7 +347,7 @@ function LibraryPageInner() {
           const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
           const parts = rel.split('/');
           const parentDir = parts.length >= 2 ? (parts[parts.length - 2] ?? '') : '';
-          return parentDir || selectedCategory || '未分类';
+          return parentDir || filters.category || '未分类';
         },
       );
     } finally {
@@ -325,8 +407,8 @@ function LibraryPageInner() {
       setActionError((error as Error).message || '删除分类失败');
       return;
     }
-    if (selectedCategory === category.name) {
-      setSelectedCategory(null);
+    if (filters.category === category.name) {
+      setFilter('category', null);
     }
     await refetchLibrary();
   };
@@ -513,20 +595,15 @@ function LibraryPageInner() {
             </Link>
           </div>
         )}
-        {authorFilter && (
-          <div className="mb-4 flex items-center gap-2 text-sm">
-            <span className="text-gray-500">作者筛选：</span>
-            <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary-200 bg-primary-50 text-primary-700">
-              {authorFilter}
-              <button
-                onClick={() => router.push('/library')}
-                className="hover:text-primary-900"
-                title="清除作者筛选"
-              >
-                ×
-              </button>
-            </span>
-            <span className="text-xs text-gray-400">共 {totalBooks} 本</span>
+        {droppedFilters.includes('quality') && (
+          <div className="mb-4 flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <span>质量筛选需要连接后端，当前已忽略该条件。</span>
+            <button
+              onClick={() => setFilter('quality', null)}
+              className="font-medium underline underline-offset-2 hover:text-amber-900"
+            >
+              清除质量筛选
+            </button>
           </div>
         )}
         <div className="flex gap-6">
@@ -536,12 +613,12 @@ function LibraryPageInner() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
               <h2 className="font-semibold text-gray-900 mb-3">书架</h2>
               <div className="space-y-1">
-                {(Object.keys(SHELF_LABELS) as ShelfKey[]).map((shelf) => {
-                  const active = activeShelf === shelf && selectedCategory === null && !authorFilter && !searchQuery;
+                {(Object.keys(SHELF_LABELS) as Array<keyof typeof SHELF_LABELS>).map((shelf) => {
+                  const active = filters.shelf === shelf && !hasNonShelfFilters;
                   return (
                     <button
                       key={shelf}
-                      onClick={() => setActiveShelf(shelf)}
+                      onClick={() => setFilter('shelf', shelf)}
                       className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors ${
                         active
                           ? 'bg-primary-50 text-primary-700'
@@ -568,9 +645,9 @@ function LibraryPageInner() {
               </div>
               
               <button
-                onClick={() => setSelectedCategory(null)}
+                onClick={() => setFilter('category', null)}
                 className={`w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors ${
-                  selectedCategory === null 
+                  filters.category === null 
                     ? 'bg-primary-50 text-primary-700' 
                     : 'hover:bg-gray-50 text-gray-700'
                 }`}
@@ -584,9 +661,9 @@ function LibraryPageInner() {
               {categories.map(category => (
                 <div key={category.id} className="group relative">
                   <button
-                    onClick={() => setSelectedCategory(category.name)}
+                    onClick={() => setFilter('category', category.name)}
                     className={`w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors ${
-                      selectedCategory === category.name 
+                      filters.category === category.name 
                         ? 'bg-primary-50 text-primary-700' 
                         : 'hover:bg-gray-50 text-gray-700'
                     }`}
@@ -627,6 +704,119 @@ function LibraryPageInner() {
                 </div>
               )}
             </div>
+
+            {isApiMode && (
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold text-gray-900">筛选</h2>
+                  {facetsQuery.isFetching && <span className="text-xs text-gray-400">统计中…</span>}
+                </div>
+                {facetsQuery.isError ? (
+                  <div className="text-sm text-red-600">
+                    分面统计加载失败
+                    <button onClick={() => facetsQuery.refetch()} className="ml-2 underline underline-offset-2">
+                      重试
+                    </button>
+                  </div>
+                ) : !facetsQuery.data ? (
+                  <div className="space-y-2">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="h-5 rounded bg-gray-100 animate-pulse" />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-xs font-medium text-gray-500 mb-1.5">格式</h3>
+                      <div className="space-y-1">
+                        {limitFacetItems(facetsQuery.data.formats, filters.format, 6).map((item) => {
+                          const unset = item.value === '';
+                          const active = filters.format === item.value;
+                          return (
+                            <button
+                              key={item.value || '__unset__'}
+                              type="button"
+                              disabled={unset}
+                              aria-pressed={unset ? undefined : active}
+                              onClick={() => {
+                                if (!unset) setFilter('format', active ? null : item.value);
+                              }}
+                              className={`w-full flex items-center justify-between rounded px-2 py-1 text-sm transition-colors ${
+                                active
+                                  ? 'bg-primary-50 text-primary-700'
+                                  : unset
+                                    ? 'text-gray-400 cursor-default'
+                                    : 'text-gray-600 hover:bg-gray-50'
+                              }`}
+                            >
+                              <span className="truncate">{unset ? '未标注' : item.value.toUpperCase()}</span>
+                              <span className="text-xs text-gray-400">{item.count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-xs font-medium text-gray-500 mb-1.5">语言</h3>
+                      <div className="space-y-1">
+                        {limitFacetItems(facetsQuery.data.languages, filters.language, 6).map((item) => {
+                          const active = filters.language === item.value;
+                          return (
+                            <button
+                              key={item.value}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => setFilter('language', active ? null : item.value)}
+                              className={`w-full flex items-center justify-between rounded px-2 py-1 text-sm transition-colors ${
+                                active
+                                  ? 'bg-primary-50 text-primary-700'
+                                  : 'text-gray-600 hover:bg-gray-50'
+                              }`}
+                            >
+                              <span className="truncate">{languageLabel(item.value)}</span>
+                              <span className="text-xs text-gray-400">{item.count}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-xs font-medium text-gray-500 mb-1.5">标签</h3>
+                      {limitFacetItems(facetsQuery.data.tags, filters.tag, 10).length === 0 ? (
+                        <p className="px-2 text-xs text-gray-400">暂无标签</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {limitFacetItems(facetsQuery.data.tags, filters.tag, 10).map((item) => {
+                            const active = filters.tag === item.value;
+                            return (
+                              <button
+                                key={item.value}
+                                type="button"
+                                aria-pressed={active}
+                                onClick={() => setFilter('tag', active ? null : item.value)}
+                                className={`w-full flex items-center justify-between rounded px-2 py-1 text-sm transition-colors ${
+                                  active
+                                    ? 'bg-primary-50 text-primary-700'
+                                    : 'text-gray-600 hover:bg-gray-50'
+                                }`}
+                              >
+                                <span className="truncate">{item.value}</span>
+                                <span className="text-xs text-gray-400">{item.count}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {facetsQuery.data.truncated.tags && (
+                        <p className="mt-1 px-2 text-xs text-gray-400">仅显示计数最高的 100 个标签</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mt-4">
               <h2 className="font-semibold text-gray-900 mb-3">数据管理</h2>
@@ -659,73 +849,114 @@ function LibraryPageInner() {
             {showOnboarding && <OnboardingBanner onDismiss={handleDismissOnboarding} />}
 
             <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    {selectedCategory || '全部书籍'}
-                  </h2>
-                  <p className="text-sm text-gray-500 mt-1">
-                    共 {totalBooks} 本书
-                    {hasMore && <span className="text-gray-400">（已加载 {books.length}）</span>}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setViewMode('grid')}
-                    className={`p-2 rounded-lg transition-colors ${
-                      viewMode === 'grid' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-100'
-                    }`}
-                  >
-                    <Grid3X3 className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => setViewMode('list')}
-                    className={`p-2 rounded-lg transition-colors ${
-                      viewMode === 'list' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-100'
-                    }`}
-                  >
-                    <List className="w-5 h-5" />
-                  </button>
+              <div className="px-6 py-4 border-b border-gray-200">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">
+                      {filters.category ||
+                        (filters.shelf !== 'all' ? SHELF_LABELS[filters.shelf] : '全部书籍')}
+                    </h2>
+                    <p className="text-sm text-gray-500 mt-1" aria-live="polite">
+                      共 {totalBooks} 本书
+                      {hasMore && <span className="text-gray-400">（已加载 {books.length}）</span>}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-sm text-gray-500">
+                      <span className="hidden sm:inline">排序</span>
+                      <select
+                        aria-label="排序方式"
+                        value={filters.sort}
+                        disabled={filters.shelf === 'recent'}
+                        onChange={(e) => setFilter('sort', e.target.value as LibrarySort)}
+                        title={filters.shelf === 'recent' ? '最近添加固定按添加时间排序' : undefined}
+                        className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:bg-gray-50 disabled:text-gray-400"
+                      >
+                        {(Object.keys(SORT_LABELS) as LibrarySort[]).map((sort) => (
+                          <option key={sort} value={sort}>{SORT_LABELS[sort]}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      onClick={() => setFilter('view', 'grid')}
+                      aria-label="网格视图"
+                      aria-pressed={filters.view === 'grid'}
+                      className={`p-2 rounded-lg transition-colors ${
+                        filters.view === 'grid' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      <Grid3X3 className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => setFilter('view', 'list')}
+                      aria-label="列表视图"
+                      aria-pressed={filters.view === 'list'}
+                      className={`p-2 rounded-lg transition-colors ${
+                        filters.view === 'list' ? 'bg-primary-50 text-primary-600' : 'text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      <List className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {activeChips.length > 0 && (
+                <div className="px-6 py-2 border-b border-gray-100 flex items-center gap-2 overflow-x-auto">
+                  {activeChips.map((chip) => (
+                    <FilterChip
+                      key={chip.key}
+                      label={chip.label}
+                      active
+                      onClear={() => removeFilter(chip.key)}
+                    />
+                  ))}
+                  <button
+                    onClick={clearFilters}
+                    className="ml-auto whitespace-nowrap text-sm text-primary-600 hover:text-primary-700"
+                  >
+                    清除全部
+                  </button>
+                </div>
+              )}
 
               {/* 质量筛选 chips（B1-10） */}
               {isApiMode ? (
                 <div className="px-6 py-2 border-b border-gray-100 flex items-center gap-2 overflow-x-auto">
                   <FilterChip
                     label="全部"
-                    active={!activeQuality}
-                    onClick={() => setActiveQuality('')}
+                    active={!filters.quality}
+                    onClick={() => setFilter('quality', null)}
                   />
                   <FilterChip
                     label="有质量问题"
                     count={qualityQuery.data ? ((qualityQuery.data.counts.empty_content ?? 0) + (qualityQuery.data.counts.short_content ?? 0) + (qualityQuery.data.counts.no_cover ?? 0) + (qualityQuery.data.counts.unclassified ?? 0)) : undefined}
-                    active={activeQuality === 'issues'}
-                    onClick={() => setActiveQuality(activeQuality === 'issues' ? '' : 'issues')}
+                    active={filters.quality === 'issues'}
+                    onClick={() => setFilter('quality', filters.quality === 'issues' ? null : 'issues')}
                   />
                   <FilterChip
                     label="正文为空"
                     count={qualityQuery.data?.counts.empty_content}
-                    active={activeQuality === 'empty_content'}
-                    onClick={() => setActiveQuality(activeQuality === 'empty_content' ? '' : 'empty_content')}
+                    active={filters.quality === 'empty_content'}
+                    onClick={() => setFilter('quality', filters.quality === 'empty_content' ? null : 'empty_content')}
                   />
                   <FilterChip
                     label="无封面"
                     count={qualityQuery.data?.counts.no_cover}
-                    active={activeQuality === 'no_cover'}
-                    onClick={() => setActiveQuality(activeQuality === 'no_cover' ? '' : 'no_cover')}
+                    active={filters.quality === 'no_cover'}
+                    onClick={() => setFilter('quality', filters.quality === 'no_cover' ? null : 'no_cover')}
                   />
                   <FilterChip
                     label="需 OCR"
                     count={qualityQuery.data?.counts.needs_ocr}
-                    active={activeQuality === 'needs_ocr'}
-                    onClick={() => setActiveQuality(activeQuality === 'needs_ocr' ? '' : 'needs_ocr')}
+                    active={filters.quality === 'needs_ocr'}
+                    onClick={() => setFilter('quality', filters.quality === 'needs_ocr' ? null : 'needs_ocr')}
                   />
                   <FilterChip
                     label="未分类"
                     count={qualityQuery.data?.counts.unclassified}
-                    active={activeQuality === 'unclassified'}
-                    onClick={() => setActiveQuality(activeQuality === 'unclassified' ? '' : 'unclassified')}
+                    active={filters.quality === 'unclassified'}
+                    onClick={() => setFilter('quality', filters.quality === 'unclassified' ? null : 'unclassified')}
                   />
                   <Link href="/quality" className="ml-auto text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap">
                     质量中心 →
@@ -766,12 +997,12 @@ function LibraryPageInner() {
               ) : importing ? (
                 <StatePanel variant="loading" title="正在导入书籍..." />
               ) : books.length === 0 ? (
-                searchQuery || activeQuality || selectedCategory || activeShelf !== 'all' ? (
+                isFiltered ? (
                   <StatePanel
                     variant="empty"
                     title="没有符合条件的书"
                     description="试试调整搜索关键词或筛选条件"
-                    action={{ label: '清除筛选', onClick: () => { setSearchInput(''); setSearchQuery(''); setActiveQuality(''); setSelectedCategory(null); setActiveShelf('all'); } }}
+                    action={{ label: '清除筛选', onClick: clearFilters }}
                   />
                 ) : isApiMode ? (
                   <StatePanel
@@ -788,7 +1019,7 @@ function LibraryPageInner() {
                     action={{ label: '去设置', onClick: () => router.push('/settings') }}
                   />
                 )
-              ) : viewMode === 'grid' ? (
+              ) : filters.view === 'grid' ? (
                 <div className="p-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                   {books.map(book => (
                     <div

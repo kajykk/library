@@ -492,6 +492,8 @@ def rate_review(
         raise HTTPException(status_code=404, detail="文档不存在")
 
     review = ensure_review_row(db, annotation)
+    if review is None:
+        raise HTTPException(status_code=400, detail="书签或已删除文档的标注不参与复习")
     interval, ease, repetitions, lapses, due = sm2_lite(
         interval_days=review.interval_days,
         ease=review.ease,

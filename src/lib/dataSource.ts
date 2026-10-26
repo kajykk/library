@@ -36,6 +36,8 @@ import {
   ApiAnnotation,
   ApiCollection,
   ApiDocument,
+  ApiDocumentFacets,
+  LibrarySort,
   QualityFilter,
   SystemHealth,
   annotationToNote,
@@ -52,6 +54,7 @@ import {
   getApiBaseUrl,
   getApiToken,
   getDocument,
+  getDocumentFacets,
   getLibraryStats,
   listAnnotationsApi,
   listCollections,
@@ -60,6 +63,8 @@ import {
   setDocumentTags,
   uploadDocument,
 } from './api/client';
+import { normalizeLanguageCode } from './language';
+import { autoAddToQueue } from './api/queue';
 import {
   Bookmark,
   Note as DbNote,
@@ -243,7 +248,14 @@ export interface LibraryPageQuery {
   author?: string | null;
   shelf?: ShelfFilter;
   quality?: QualityFilter;
+  sort?: LibrarySort;
+  format?: string | null;
+  language?: string | null;
+  tag?: string | null;
 }
+
+/** 分面查询与列表共用筛选字段，只是不分页、不排序。 */
+export type LibraryFacetQuery = Omit<LibraryPageQuery, 'offset' | 'limit' | 'sort'>;
 
 export interface LibraryPage {
   books: Book[];
@@ -285,11 +297,61 @@ function matchesLocalFilters(book: Book, query: LibraryPageQuery): boolean {
   }
   if (query.category && book.category !== query.category) return false;
   if (query.author && !(book.author || '').includes(query.author)) return false;
+  if (query.format && (book.format || '').toLowerCase() !== query.format.toLowerCase()) return false;
+  if (query.language && normalizeLanguageCode(book.language) !== normalizeLanguageCode(query.language)) {
+    return false;
+  }
+  if (query.tag && !(book.tags || []).includes(query.tag)) return false;
   if (query.shelf && query.shelf !== 'all') {
     if (query.shelf === 'recent') return true; // 最近添加 = 已按 addedAt 倒序，无额外条件
     if (bookStatus(book) !== query.shelf) return false;
   }
   return true;
+}
+
+function compareIds(a: Book, b: Book): number {
+  return a.id.localeCompare(b.id);
+}
+
+/** 本地模式排序：每个分支都以 id 收尾，保证同值行顺序稳定、分页不重复。 */
+export function sortLocalBooks(books: Book[], sort: LibrarySort = 'created_desc'): Book[] {
+  const sorted = [...books];
+  switch (sort) {
+    case 'created_asc':
+      sorted.sort((a, b) => (a.addedAt ?? 0) - (b.addedAt ?? 0) || compareIds(a, b));
+      break;
+    case 'title_asc':
+      sorted.sort(
+        (a, b) => a.title.localeCompare(b.title, 'zh') || compareIds(a, b),
+      );
+      break;
+    case 'author_asc':
+      sorted.sort(
+        (a, b) =>
+          (a.author || '').localeCompare(b.author || '', 'zh') ||
+          a.title.localeCompare(b.title, 'zh') ||
+          compareIds(a, b),
+      );
+      break;
+    case 'last_read_desc':
+      sorted.sort(
+        (a, b) => (b.lastReadAt ?? -Infinity) - (a.lastReadAt ?? -Infinity) || compareIds(a, b),
+      );
+      break;
+    case 'progress_desc':
+      sorted.sort(
+        (a, b) => (b.readProgress ?? 0) - (a.readProgress ?? 0) || compareIds(a, b),
+      );
+      break;
+    case 'file_size_desc':
+      sorted.sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0) || compareIds(a, b));
+      break;
+    case 'created_desc':
+    default:
+      sorted.sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0) || compareIds(a, b));
+      break;
+  }
+  return sorted;
 }
 
 export async function loadLibraryMeta(): Promise<LibraryMeta> {
@@ -348,6 +410,67 @@ export async function loadLibraryMeta(): Promise<LibraryMeta> {
   };
 }
 
+/** 列表 / 计数 / 分面共用的后端筛选参数，避免三处各写一份后条件漂移。 */
+function buildApiFilterParams(
+  query: LibraryFacetQuery & { sort?: LibrarySort },
+): Record<string, string> {
+  const params: Record<string, string> = {
+    sort: query.shelf === 'recent' ? 'created_desc' : (query.sort ?? 'created_desc'),
+  };
+  // 最近添加 = 按 created_at 倒序的第一页，不需要额外条件
+  if (query.shelf && query.shelf !== 'all' && query.shelf !== 'recent') {
+    params.status = query.shelf;
+  }
+  if (query.search?.trim()) params.q = query.search.trim();
+  if (query.author) params.author = query.author;
+  if (query.quality) params.quality = query.quality;
+  if (query.format) params.format = query.format;
+  if (query.language) params.language = query.language;
+  if (query.tag) params.tag = query.tag;
+  return params;
+}
+
+async function resolveCollectionId(
+  category?: string | null,
+): Promise<{ found: boolean; id: string | null }> {
+  if (!category) return { found: true, id: null };
+  const collections = await listCollections();
+  const found = collections.find((c) => c.name === category);
+  // 分类名在后端不存在（已删除/改名的旧状态）：直接给空结果，避免退化成"全部书籍"
+  return found ? { found: true, id: found.id } : { found: false, id: null };
+}
+
+function emptyFacets(): ApiDocumentFacets {
+  return {
+    total: 0,
+    formats: [],
+    languages: [],
+    tags: [],
+    authors: [],
+    categories: [],
+    uncategorized: 0,
+    truncated: { tags: false, authors: false },
+  };
+}
+
+/** 分面统计仅 API 模式可用；本地模式没有 SQL 聚合，UI 直接隐藏该区块。 */
+export async function loadLibraryFacets(query: LibraryFacetQuery): Promise<ApiDocumentFacets> {
+  const mode = await resolveMode();
+  if (mode === 'local') {
+    throw new Error('分面统计需要连接后端服务');
+  }
+  const collection = await resolveCollectionId(query.category);
+  if (!collection.found) return emptyFacets();
+
+  const params: Record<string, string> = {
+    types: BOOK_TYPES.join(','),
+    ...buildApiFilterParams(query),
+  };
+  delete params.sort; // 分面不接受排序参数，明确不传
+  if (collection.id) params.collection_id = collection.id;
+  return getDocumentFacets(params);
+}
+
 /** 分页取书架：API 模式把筛选条件下推到后端（offset/limit），本地模式在内存里过滤后切片 */
 export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryPage> {
   const mode = await resolveMode();
@@ -358,41 +481,31 @@ export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryP
 
   if (mode === 'local') {
     await initDB();
-    const all = (await getBooks()).sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0));
-    // 先按筛选条件过滤再截断：先 slice 会让带搜索/分类的「最近添加」漏掉目标书
-    const filtered = all.filter((book) => matchesLocalFilters(book, query));
-    const slice = filtered.slice(query.offset, query.offset + query.limit);
+    // 先按筛选条件过滤再排序、截断：先 slice 会让带搜索/分类的「最近添加」漏掉目标书
+    const filtered = (await getBooks()).filter((book) => matchesLocalFilters(book, query));
+    const sorted = sortLocalBooks(
+      filtered,
+      query.shelf === 'recent' ? 'created_desc' : query.sort,
+    );
+    const slice = sorted.slice(query.offset, query.offset + query.limit);
     return {
       books: slice,
-      hasMore: query.offset + slice.length < filtered.length,
-      total: filtered.length,
+      hasMore: query.offset + slice.length < sorted.length,
+      total: sorted.length,
     };
   }
 
-  const category = query.category;
-  let collectionId: string | null = null;
-  if (category) {
-    const collections = await listCollections();
-    const found = collections.find((c) => c.name === category);
-    // 分类名在后端不存在（已删除/改名的旧状态）：直接给空结果，避免退化成"全部书籍"
-    if (!found) return { books: [], hasMore: false, total: 0 };
-    collectionId = found.id;
-  }
+  const collection = await resolveCollectionId(query.category);
+  if (!collection.found) return { books: [], hasMore: false, total: 0 };
 
   const params: Record<string, string> = {
     types: BOOK_TYPES.join(','),
     include_content: 'false',
     limit: String(query.limit),
     offset: String(query.offset),
+    ...buildApiFilterParams(query),
   };
-  if (collectionId) params.collection_id = collectionId;
-  // 最近添加 = 按 created_at 倒序的第一页，不需要额外条件
-  if (query.shelf && query.shelf !== 'all' && query.shelf !== 'recent') {
-    params.status = query.shelf;
-  }
-  if (query.search?.trim()) params.q = query.search.trim();
-  if (query.author) params.author = query.author;
-  if (query.quality) params.quality = query.quality;
+  if (collection.id) params.collection_id = collection.id;
 
   const [docs, total] = await Promise.all([
     listDocuments(params),
@@ -663,6 +776,23 @@ export async function deleteCategoryAndReset(category: Category): Promise<void> 
 
 // ---------- 阅读器 ----------
 
+/** 自动入队每本书每会话只尝试一次：进度上报是高频调用，不能每次都打后端。 */
+const autoAddAttempted = new Set<string>();
+
+function maybeAutoAddToQueue(bookId: string, progressPercent: number): void {
+  if (progressPercent <= 0 || autoAddAttempted.has(bookId)) return;
+  autoAddAttempted.add(bookId);
+  try {
+    const key = `kb_queue_auto_added:${bookId}`;
+    if (sessionStorage.getItem(key) === '1') return;
+    sessionStorage.setItem(key, '1');
+  } catch {
+    // sessionStorage 不可用时仅依赖内存去重
+  }
+  // 队列是增值功能，失败静默：进度已经保存成功
+  void autoAddToQueue(bookId).catch(() => {});
+}
+
 export async function getFileArrayBuffer(bookId: string): Promise<ArrayBuffer | null> {
   const mode = await resolveMode();
   if (mode === 'api') {
@@ -695,6 +825,7 @@ export async function saveReadingProgress(
         position: position === null ? null : { page: position },
         last_read_at: new Date().toISOString(),
       });
+      maybeAutoAddToQueue(bookId, progressPercent);
     } catch (err) {
       console.warn('保存进度失败，已进入离线队列:', err);
       await queueOfflineWrite('progress', { bookId, progressPercent, position });

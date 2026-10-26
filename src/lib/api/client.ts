@@ -51,7 +51,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers: {
@@ -173,6 +173,44 @@ export function getDocumentInsight(id: string): Promise<DocumentInsight> {
  * 只做"找最近的 N 条"的场景不传，接受默认分页。
  */
 export const LIST_HARD_LIMIT = 1000;
+
+/** 书架排序白名单，值必须与后端 documents.filters.SORT_OPTIONS 一致。 */
+export type LibrarySort =
+  | 'created_desc'
+  | 'created_asc'
+  | 'title_asc'
+  | 'author_asc'
+  | 'last_read_desc'
+  | 'progress_desc'
+  | 'file_size_desc';
+
+export interface FacetItem {
+  value: string;
+  count: number;
+}
+
+export interface CategoryFacet {
+  collection_id: string;
+  name: string;
+  count: number;
+}
+
+export interface ApiDocumentFacets {
+  total: number;
+  formats: FacetItem[];
+  languages: FacetItem[];
+  tags: FacetItem[];
+  authors: FacetItem[];
+  categories: CategoryFacet[];
+  uncategorized: number;
+  truncated: { tags: boolean; authors: boolean };
+}
+
+/** 分面计数：参数与列表/计数端点一致，每维由后端排除自身条件。 */
+export function getDocumentFacets(params?: Record<string, string>): Promise<ApiDocumentFacets> {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+  return request<ApiDocumentFacets>(`/api/documents/facets${qs}`);
+}
 
 export function listDocuments(params?: Record<string, string>): Promise<ApiDocument[]> {
   const qs = params ? '?' + new URLSearchParams(params).toString() : '';
