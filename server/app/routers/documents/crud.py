@@ -50,7 +50,7 @@ def list_documents(
     quality: str | None = None,
     format: str | None = None,
     language: str | None = None,
-    sort: str = "created_at_desc",
+    sort: str = "created_desc",
     include_deleted: bool = False,
     include_content: bool = False,
     limit: int | None = Query(default=None, ge=1, le=LIST_HARD_LIMIT),
@@ -76,16 +76,33 @@ def list_documents(
         format=format,
         language=language,
     )
-    # 排序（B3-01）：末位加 Document.id tiebreaker，避免 offset 分页重复/漏项
+    # 排序（B3-01）：键名与契约第 2 节一致；末位 tiebreaker 保证 offset 分页不重复不丢失
     sort_map = {
-        "created_at_desc": [Document.created_at.desc(), Document.id],
-        "created_at_asc": [Document.created_at.asc(), Document.id],
-        "title_asc": [Document.title.asc(), Document.id],
-        "title_desc": [Document.title.desc(), Document.id],
-        "last_read_desc": [Document.last_read_at.desc().nullslast(), Document.id],
-        "updated_desc": [Document.updated_at.desc(), Document.id],
+        "created_desc": [Document.created_at.desc(), Document.id.desc()],
+        "created_asc": [Document.created_at.asc(), Document.id.asc()],
+        "title_asc": [Document.title.asc(), Document.id.asc()],
+        "author_asc": [
+            func.coalesce(Document.author, "").asc(),
+            Document.title.asc(),
+            Document.id.asc(),
+        ],
+        "last_read_desc": [
+            Document.last_read_at.is_(None),
+            Document.last_read_at.desc(),
+            Document.id.desc(),
+        ],
+        "progress_desc": [
+            func.coalesce(Document.read_progress, 0).desc(),
+            Document.id.desc(),
+        ],
+        "file_size_desc": [
+            func.coalesce(Document.file_size, 0).desc(),
+            Document.id.desc(),
+        ],
     }
-    order_cols = sort_map.get(sort, sort_map["created_at_desc"])
+    order_cols = sort_map.get(sort)
+    if order_cols is None:
+        raise HTTPException(status_code=400, detail=f"不支持的 sort: {sort}")
     stmt = stmt.order_by(*order_cols).offset(offset)
     # 未显式传 limit 时按默认页大小截断；需要全量的调用方（书架等）显式传 limit=LIST_HARD_LIMIT
     stmt = stmt.limit(limit if limit is not None else LIST_DEFAULT_LIMIT)

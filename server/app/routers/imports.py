@@ -1,15 +1,22 @@
-"""导入与批量治理 API（B2-03/04/06/07/08/09）：目录扫描、导入、批量修改/软删除、封面、重提取、语言归一化、孤儿隔离。"""
+"""导入与批量治理 API（B2-03/06/07/08/09）：目录扫描、导入、封面、重提取、语言归一化、孤儿隔离。
 
+批量修改/软删除与筛选结果 id 已迁到 documents 包（PATCH /documents/batch、GET /documents/ids），
+否则会被 documents 的 /{doc_id} 抢先匹配。
+"""
+
+import math
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
-from ..models import Document, DocumentQuality, utcnow
+from ..models import Document
+from ..schemas import DocumentOut
+from ..services import file_storage
 from ..services.directory_scan import (
     ImportPathError,
     list_import_dirs,
@@ -20,12 +27,14 @@ from ..services.directory_scan import (
 )
 from ..services.ingest import finalize_ingest, validate_format, IngestError
 from ..services.file_storage import import_file
-from ..services.operation_log import record
+from ..services.operation_log import MAX_DOCS_PER_OP, record
 from ..services.orphan_quarantine import QuarantineError
 from ..services.orphan_quarantine import quarantine as quarantine_files
-from ..services.quality_audit import normalize_language
+from .documents import get_doc_or_404
 
 router = APIRouter(tags=["imports"])
+
+MAX_COVER_BYTES = 8 * 1024 * 1024
 
 
 # ---- 请求/响应模型 ----
@@ -53,38 +62,22 @@ class ImportResponse(BaseModel):
     results: list[dict]
 
 
-class BatchUpdateRequest(BaseModel):
-    ids: list[str]
-    collection_id: str | None = None
-    language: str | None = None
-    tags: list[str] | None = None
+class NormalizeLanguageRequest(BaseModel):
+    dry_run: bool = False
+    ids: list[str] | None = None
     confirm: bool = False
 
 
-class BatchDeleteRequest(BaseModel):
-    ids: list[str]
-    confirm: bool = False
-
-
-class BatchIdsRequest(BaseModel):
-    quality: str | None = None
-    types: str | None = None
-    status: str | None = None
-
-
-class CoverUploadRequest(BaseModel):
-    document_id: str
-    cover_base64: str
-    confirm: bool = False
+class NormalizeLanguageResponse(BaseModel):
+    dry_run: bool
+    total: int
+    changes: list[dict]
+    unchanged: int
+    batches: int
 
 
 class ReextractRequest(BaseModel):
     ids: list[str]
-    confirm: bool = False
-
-
-class NormalizeLanguageRequest(BaseModel):
-    ids: list[str] | None = None
     confirm: bool = False
 
 
@@ -210,140 +203,92 @@ def execute_import(req: ImportRequest, db: Session = Depends(get_db)):
     return ImportResponse(imported=imported, skipped=skipped, failed=failed, results=results)
 
 
-# ---- 批量获取筛选结果 id ----
-
-@router.post("/documents/ids")
-def get_document_ids(req: BatchIdsRequest, db: Session = Depends(get_db)):
-    from .documents.filters import apply_quality_filter
-
-    stmt = select(Document.id).where(Document.deleted_at.is_(None))
-    if req.types:
-        values = [v.strip() for v in req.types.split(",") if v.strip()]
-        stmt = stmt.where(Document.type.in_(values))
-    if req.quality:
-        stmt = apply_quality_filter(stmt, db, req.quality)
-    ids = [str(r[0]) for r in db.execute(stmt.limit(500)).all()]
-    return {"ids": ids, "total": len(ids)}
-
-
-# ---- 批量修改 ----
-
-@router.post("/documents/batch", response_model=BatchResponse)
-def batch_update(req: BatchUpdateRequest, db: Session = Depends(get_db)):
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="需要 confirm: true")
-    if len(req.ids) > 500:
-        raise HTTPException(status_code=400, detail="单次最多 500 个文档")
-
-    before_state = {"docs": {}}
-    after_state = {"docs": {}}
-    affected = 0
-
-    for id_str in req.ids:
-        doc = db.get(Document, uuid.UUID(id_str))
-        if doc is None or doc.deleted_at is not None:
-            continue
-        before_state["docs"][id_str] = {
-            "collection_id": str(doc.collection_id) if doc.collection_id else None,
-            "language": doc.language,
-        }
-        if req.collection_id:
-            doc.collection_id = uuid.UUID(req.collection_id)
-        if req.language:
-            doc.language = req.language
-        after_state["docs"][id_str] = {
-            "collection_id": str(doc.collection_id) if doc.collection_id else None,
-            "language": doc.language,
-        }
-        affected += 1
-
-    summary_parts = []
-    if req.collection_id:
-        summary_parts.append("改分类")
-    if req.language:
-        summary_parts.append(f"改语言→{req.language}")
-
-    log = record(
-        db,
-        kind="batch_update",
-        document_ids=[uuid.UUID(i) for i in req.ids],
-        before_state=before_state,
-        after_state=after_state,
-        summary=f"批量修改（{'、'.join(summary_parts)}）：{affected} 本",
-        undoable=True,
-    )
-    db.commit()
-    return BatchResponse(status="applied", affected=affected, operation_id=str(log.id))
-
-
-# ---- 批量软删除 ----
-
-@router.post("/documents/batch/delete", response_model=BatchResponse)
-def batch_soft_delete(req: BatchDeleteRequest, db: Session = Depends(get_db)):
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="需要 confirm: true")
-    if len(req.ids) > 500:
-        raise HTTPException(status_code=400, detail="单次最多 500 个文档")
-
-    affected = 0
-    for id_str in req.ids:
-        doc = db.get(Document, uuid.UUID(id_str))
-        if doc is None or doc.deleted_at is not None:
-            continue
-        doc.deleted_at = utcnow()
-        affected += 1
-
-    log = record(
-        db,
-        kind="batch_soft_delete",
-        document_ids=[uuid.UUID(i) for i in req.ids],
-        before_state={},
-        after_state={"docs": {i: {"deleted": True} for i in req.ids}},
-        summary=f"批量软删除：{affected} 本",
-        undoable=True,
-    )
-    db.commit()
-    return BatchResponse(status="applied", affected=affected, operation_id=str(log.id))
-
-
 # ---- 语言归一化 ----
 
-@router.post("/documents/normalize-language", response_model=BatchResponse)
+def _normalize_language_value(raw: str | None) -> str:
+    """契约第 5 节：en*/zh*/ja* → 对应两字母码，空 → und，其他值保持不变。
+
+    不能用 quality_audit.normalize_language —— 它把未知码（如 pt）吞成 und，
+    会让「按语言归一化」变成「抹掉未收录语言」。
+    """
+    value = (raw or "").strip()
+    if not value:
+        return "und"
+    lower = value.lower()
+    for prefix in ("en", "zh", "ja"):
+        if lower.startswith(prefix):
+            return prefix
+    return value
+
+
+def _parse_ids(ids: list[str]) -> list[uuid.UUID]:
+    try:
+        return [uuid.UUID(i) for i in ids]
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="ids 含非法 UUID")
+
+
+@router.post("/documents/normalize-language", response_model=NormalizeLanguageResponse)
 def normalize_languages(req: NormalizeLanguageRequest, db: Session = Depends(get_db)):
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="需要 confirm: true")
+    if not req.dry_run and not req.confirm:
+        raise HTTPException(status_code=400, detail="需要 confirm: true 或 dry_run: true")
 
-    if req.ids:
-        docs = db.query(Document).filter(
-            Document.id.in_([uuid.UUID(i) for i in req.ids]),
-            Document.deleted_at.is_(None),
-        ).all()
-    else:
-        docs = db.query(Document).filter(Document.deleted_at.is_(None)).all()
-
-    before_state = {"docs": {}}
-    after_state = {"docs": {}}
-    affected = 0
-
-    for doc in docs:
-        normalized = normalize_language(doc.language)
-        if normalized != doc.language:
-            before_state["docs"][str(doc.id)] = {"language": doc.language}
-            doc.language = normalized
-            after_state["docs"][str(doc.id)] = {"language": normalized}
-            affected += 1
-
-    log = record(
-        db,
-        kind="language_normalize",
-        document_ids=[uuid.UUID(i) for i in before_state["docs"].keys()],
-        before_state=before_state,
-        after_state=after_state,
-        summary=f"语言归一化：{affected} 本",
-        undoable=True,
+    stmt = select(Document.id, Document.title, Document.language).where(
+        Document.deleted_at.is_(None)
     )
+    if req.ids is not None:
+        stmt = stmt.where(Document.id.in_(_parse_ids(req.ids)))
+    else:
+        # 省略 ids = 全部存活 book/pdf；显式传 ids 时不限制类型
+        stmt = stmt.where(Document.type.in_(("book", "pdf")))
+
+    rows = db.execute(stmt.order_by(Document.created_at, Document.id)).all()
+    changes: list[dict] = []
+    for doc_id, title, language in rows:
+        normalized = _normalize_language_value(language)
+        if normalized != language:
+            changes.append(
+                {
+                    "document_id": str(doc_id),
+                    "title": title,
+                    "from": language,
+                    "to": normalized,
+                }
+            )
+
+    batches = math.ceil(len(changes) / MAX_DOCS_PER_OP) if changes else 0
+    if req.dry_run:
+        return NormalizeLanguageResponse(
+            dry_run=True,
+            total=len(rows),
+            changes=changes,
+            unchanged=len(rows) - len(changes),
+            batches=batches,
+        )
+
+    for start in range(0, len(changes), MAX_DOCS_PER_OP):
+        chunk = changes[start : start + MAX_DOCS_PER_OP]
+        for change in chunk:
+            doc = db.get(Document, uuid.UUID(change["document_id"]))
+            doc.language = change["to"]
+        record(
+            db,
+            kind="language_normalize",
+            document_ids=[uuid.UUID(c["document_id"]) for c in chunk],
+            before_state={"docs": {c["document_id"]: {"language": c["from"]} for c in chunk}},
+            after_state={"docs": {c["document_id"]: {"language": c["to"]} for c in chunk}},
+            summary=f"语言归一化：{len(chunk)} 本",
+            undoable=True,
+        )
     db.commit()
-    return BatchResponse(status="applied", affected=affected, operation_id=str(log.id))
+
+    return NormalizeLanguageResponse(
+        dry_run=False,
+        total=len(rows),
+        changes=changes,
+        unchanged=len(rows) - len(changes),
+        batches=batches,
+    )
 
 
 # ---- 重提取 ----
@@ -419,42 +364,50 @@ def quarantine_orphans(
 
 # ---- 补封面 ----
 
-@router.put("/documents/{document_id}/cover", response_model=BatchResponse)
-def upload_cover(
+def _sniff_cover_ext(data: bytes) -> str | None:
+    """按魔数判断封面类型，不信任扩展名与 Content-Type。"""
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+@router.put("/documents/{document_id}/cover", response_model=DocumentOut)
+async def upload_cover(
     document_id: uuid.UUID,
-    req: CoverUploadRequest,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    import base64
+    doc = get_doc_or_404(db, document_id)
 
-    if not req.confirm:
-        raise HTTPException(status_code=400, detail="需要 confirm: true")
+    buf = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > MAX_COVER_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"封面超过 {MAX_COVER_BYTES // (1024 * 1024)} MB 上限",
+            )
 
-    doc = db.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="文档不存在")
-
-    # 魔数校验
-    try:
-        raw = base64.b64decode(req.cover_base64)
-    except Exception:
-        raise HTTPException(status_code=400, detail="无效的 base64 数据")
-
-    if raw[:3] == b"\xff\xd8\xff":
-        ext = "jpg"
-    elif raw[:8] == b"\x89PNG\r\n\x1a\n":
-        ext = "png"
-    else:
-        raise HTTPException(status_code=400, detail="不支持的图片格式（仅 jpg/png）")
-
-    from ..services.file_storage import write_relative
+    ext = _sniff_cover_ext(bytes(buf))
+    if ext is None:
+        raise HTTPException(
+            status_code=400, detail="不支持的图片格式（仅 JPEG/PNG/WebP/GIF）"
+        )
 
     old_cover = doc.cover_path
-    rel_path = f"covers/{document_id}.{ext}"
-    write_relative(rel_path, raw)
+    rel_path = file_storage.save_cover(document_id, bytes(buf), ext)
     doc.cover_path = rel_path
 
-    log = record(
+    record(
         db,
         kind="cover_upload",
         document_ids=[document_id],
@@ -464,4 +417,4 @@ def upload_cover(
         undoable=True,
     )
     db.commit()
-    return BatchResponse(status="applied", affected=1, operation_id=str(log.id))
+    return doc

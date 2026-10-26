@@ -258,7 +258,7 @@ class TestUndo:
         resp = self._undo(client, body["operation_id"])
         assert resp.status_code == 200, resp.text
         outcome = resp.json()
-        assert outcome["status"] == "restored"
+        assert outcome["status"] == "undone"
         assert outcome["restored"] == 2
         assert outcome["skipped"] == []
 
@@ -299,7 +299,7 @@ class TestUndo:
         again = self._undo(client, body["operation_id"])
         assert again.status_code == 200
         assert again.json()["restored"] == 1
-        assert again.json()["status"] == "restored"
+        assert again.json()["status"] == "undone"
         log = client.get(f"/api/operations/{body['operation_id']}", headers=H).json()
         assert log["status"] == "undone"
 
@@ -308,4 +308,4 @@ class TestUndo:
         shutil.rmtree(_data_root() / Path(*body["quarantine_dir"].split("/")), ignore_errors=True)
         resp = self._undo(client, body["operation_id"])
         assert resp.status_code == 400
-        assert "不可撤销" in resp.json()["detail"]
+        assert "not undoable" in resp.json()["detail"]

@@ -4,12 +4,12 @@
 """
 
 import uuid
-from datetime import datetime, timezone
 from typing import TypedDict
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Document, OperationLog, utcnow
+from ..models import Document, OperationLog, Tag, utcnow
 from .orphan_quarantine import restore_from_manifest
 
 MAX_DOCS_PER_OP = 500
@@ -52,7 +52,10 @@ def record(
 
 
 def undo(db: Session, operation_id: uuid.UUID) -> UndoResult:
-    """撤销一次操作。按 kind 分派到具体恢复逻辑。"""
+    """撤销一次操作。按 kind 分派到具体恢复逻辑。
+
+    返回状态统一为契约第 4 节的 undone / partial / not_undoable / already_undone。
+    """
     log = db.get(OperationLog, operation_id)
     if log is None:
         return {"status": "not_found", "restored": 0, "skipped": []}
@@ -66,10 +69,37 @@ def undo(db: Session, operation_id: uuid.UUID) -> UndoResult:
         return {"status": "not_undoable", "restored": 0, "skipped": []}
 
     result = handler(db, log)
-    if result["status"] == "restored":
+    if result["status"] == "undone":
         log.status = "undone"
         log.undone_at = utcnow()
     return result
+
+
+def _settle(restored: int, skipped: list[dict]) -> UndoResult:
+    """按契约口径收口：有跳过即 partial，全成即可 undone。"""
+    status = "partial" if skipped else "undone"
+    return {"status": status, "restored": restored, "skipped": skipped}
+
+
+def _current_field_value(doc: Document, field: str):
+    if field == "tags":
+        return sorted(tag.name for tag in doc.tags)
+    value = getattr(doc, field)
+    return str(value) if value is not None else None
+
+
+def _restore_field(db: Session, doc: Document, field: str, value):
+    if field == "tags":
+        names = list(value or [])
+        tags = db.scalars(select(Tag).where(Tag.name.in_(names))).all() if names else []
+        by_name = {tag.name: tag for tag in tags}
+        doc.tags = [by_name[name] for name in names if name in by_name]
+        return
+    if field == "collection_id":
+        # before_state 里存的是 JSON 字符串，Uuid 列只接受 uuid.UUID
+        doc.collection_id = uuid.UUID(value) if value else None
+        return
+    setattr(doc, field, value)
 
 
 def _undo_batch_update(db: Session, log: OperationLog) -> UndoResult:
@@ -88,21 +118,18 @@ def _undo_batch_update(db: Session, log: OperationLog) -> UndoResult:
         # 检查文档当前值是否仍等于 after_state（未被后续修改）
         modified = False
         for field, expected in after_fields.items():
-            if hasattr(doc, field):
-                current = getattr(doc, field)
-                if str(current) != str(expected):
-                    modified = True
-                    break
+            if _current_field_value(doc, field) != expected:
+                modified = True
+                break
         if modified:
             skipped.append({"document_id": doc_id_str, "reason": "modified_after_operation"})
             continue
         # 恢复 before_state
         for field, value in before_fields.items():
-            if hasattr(doc, field):
-                setattr(doc, field, value)
+            _restore_field(db, doc, field, value)
         restored += 1
 
-    return {"status": "restored" if restored > 0 or not skipped else "partial", "restored": restored, "skipped": skipped}
+    return _settle(restored, skipped)
 
 
 def _undo_batch_soft_delete(db: Session, log: OperationLog) -> UndoResult:
@@ -119,7 +146,7 @@ def _undo_batch_soft_delete(db: Session, log: OperationLog) -> UndoResult:
             continue
         doc.deleted_at = None
         restored += 1
-    return {"status": "restored", "restored": restored, "skipped": skipped}
+    return _settle(restored, skipped)
 
 
 def _undo_directory_import(db: Session, log: OperationLog) -> UndoResult:
@@ -136,7 +163,7 @@ def _undo_directory_import(db: Session, log: OperationLog) -> UndoResult:
             continue
         doc.deleted_at = utcnow()
         restored += 1
-    return {"status": "restored", "restored": restored, "skipped": skipped}
+    return _settle(restored, skipped)
 
 
 def _undo_cover_upload(db: Session, log: OperationLog) -> UndoResult:
@@ -149,10 +176,9 @@ def _undo_cover_upload(db: Session, log: OperationLog) -> UndoResult:
         if doc is None:
             skipped.append({"document_id": doc_id_str, "reason": "document_not_found"})
             continue
-        old_cover = fields.get("cover_path")
-        doc.cover_path = old_cover
+        doc.cover_path = fields.get("cover_path")
         restored += 1
-    return {"status": "restored", "restored": restored, "skipped": skipped}
+    return _settle(restored, skipped)
 
 
 def _undo_language_normalize(db: Session, log: OperationLog) -> UndoResult:
@@ -169,9 +195,7 @@ def _undo_orphan_quarantine(db: Session, log: OperationLog) -> UndoResult:
     if not outcome["manifest_found"]:
         # manifest 丢了就再没有依据判断哪些文件该回哪儿：保持日志 applied，不要伪装成已撤销
         return {"status": "not_undoable", "restored": 0, "skipped": outcome["skipped"]}
-    if outcome["restored"] == 0 and outcome["skipped"]:
-        return {"status": "partial", "restored": 0, "skipped": outcome["skipped"]}
-    return {"status": "restored", "restored": outcome["restored"], "skipped": outcome["skipped"]}
+    return _settle(outcome["restored"], outcome["skipped"])
 
 
 _UNDO_HANDLERS = {

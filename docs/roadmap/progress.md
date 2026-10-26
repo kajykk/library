@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R2 完成**（2026-10-27）；R3 待开始 |
-| 当前任务 | RW-301（`documents/batch` 契约对齐） |
-| 最后更新 | 2026-10-27（RW-201 脚本入库 + RW-202 恢复 70 行任务表） |
+| 当前批次 | **返工 R1–R3 完成**（2026-10-27）；R4 待开始 |
+| 当前任务 | RW-401（`reextract` 真实现或摘除），先取 RD-A 决策 |
+| 最后更新 | 2026-10-27（R3 契约对齐：batch/队列/复习/stats/sort/ids） |
 | 阻塞项 | RD-A（R4 `reextract` 端点）、RD-B（R5 前端范围）、RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围 |
-| 下一步 | R3：RW-301 → RW-302 → RW-303 → RW-304 |
+| 下一步 | R4：RD-A → RW-401 → RW-402 |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -61,31 +61,31 @@
 | B1-10 | 书架质量筛选 chips + 设置页健康标签 | DONE | [library/page.tsx:782](../../src/app/library/page.tsx#L782)；设置页健康卡 |
 | B1-11 | 后端/前端测试、浏览器验证、B1 报告 | DONE | [reports/B1-2026-10-26.md](reports/B1-2026-10-26.md)；`test_quality*.py` |
 
-## B2 · 目录扫描导入 + 批量治理 — DONE（9/13）
+## B2 · 目录扫描导入 + 批量治理 — DONE（10/13）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
 | B2-01 | 抽取 `services/ingest.py`，上传与目录导入共用 | DONE | [ingest.py](../../server/app/services/ingest.py)；`file_storage.import_file` |
 | B2-02 | `directory_scan.py` 白名单扫描 | DONE | [directory_scan.py](../../server/app/services/directory_scan.py)；RW-102 加固见 REWORK §7.2 |
 | B2-03 | `imports.py` 路由、扫描/导入任务 | DONE | [imports.py:113-213](../../server/app/routers/imports.py#L113-L213)；RW-102 改为 `dir_id + rel_paths` |
-| B2-04 | 批量修改/软删除（500 上限、confirm） | DONE | [imports.py:231](../../server/app/routers/imports.py#L231)、[:281](../../server/app/routers/imports.py#L281)；契约形状差异见 RD-06 → RW-301 |
-| B2-05 | `operation_logs` + undo 接口 | DONE | [operation_log.py](../../server/app/services/operation_log.py)、[operations.py](../../server/app/routers/operations.py) |
-| B2-06 | `PUT /documents/{id}/cover`，魔数校验 | DONE | [imports.py:422](../../server/app/routers/imports.py#L422)；契约 multipart 差异见 RD-16 → RW-301 |
-| B2-07 | 重提取包装函数 + `reextract` 后台任务 | PARTIAL | 端点仍是空壳（[imports.py:351-378](../../server/app/routers/imports.py#L351-L378)）；**RD-05 → RW-401（RD-A 决策）** |
-| B2-08 | 语言归一化批量动作（dry-run + confirm） | PARTIAL | 端点存在但无 dry-run/分批/500 上限，未知语言被吞成 `und`；**RD-15 → RW-301 小项** |
+| B2-04 | 批量修改/软删除（500 上限、confirm） | DONE | [documents/batch.py](../../server/app/routers/documents/batch.py)；嵌套 `patch`/`missing_ids`/tags 契约对齐见 REWORK §7.6 |
+| B2-05 | `operation_logs` + undo 接口 | DONE | [operation_log.py](../../server/app/services/operation_log.py)、[operations.py](../../server/app/routers/operations.py)；状态词与 Uuid 恢复见 REWORK §7.6 |
+| B2-06 | `PUT /documents/{id}/cover`，魔数校验 | DONE | [imports.py:367-420](../../server/app/routers/imports.py#L367-L420)；multipart/8 MB/JPEG·PNG·GIF·WebP 见 REWORK §7.6；撤销字节限制见 REWORK F-9 |
+| B2-07 | 重提取包装函数 + `reextract` 后台任务 | PARTIAL | 端点仍是空壳（[imports.py:294-320](../../server/app/routers/imports.py#L294-L320)）；**RD-05 → RW-401（RD-A 决策）** |
+| B2-08 | 语言归一化批量动作（dry-run + confirm） | DONE | [imports.py:208-291](../../server/app/routers/imports.py#L208-L291)：dry-run/500 分批/未知值保留，REWORK §7.6 |
 | B2-09 | 孤儿文件隔离（移动不删除 + manifest） | DONE | [orphan_quarantine.py](../../server/app/services/orphan_quarantine.py)；RW-103（REWORK §7.3） |
 | B2-10 | `/import` 三步向导 UI | DONE | [import/page.tsx](../../src/app/import/page.tsx) |
 | B2-11 | 质量中心动作 UI（预览/确认/日志/撤销） | PARTIAL | [quality/page.tsx:314](../../src/app/quality/page.tsx#L314) 仍写「隔离操作将在 B2 批次提供」；未纳入 R5 最小集，随 **RD-B** 范围决策处理 |
 | B2-12 | 书架多选与批量操作条 | PARTIAL | 全仓无 `useLibrarySelection`；**RD-11 → RW-504（RD-B）** |
-| B2-13 | 测试、Downloads 扫描复核、B2 报告 | DONE | 后端 195 passed（R1/R2 后）、前端 85 passed；[reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) |
+| B2-13 | 测试、Downloads 扫描复核、B2 报告 | DONE | 后端 195 passed（R3 后）、前端 85 passed；[reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) |
 
 ## B3 · 书架信息架构与性能 — PARTIAL（5/12）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B3-01 | `GET /documents` 增加 `sort` | DONE | [crud.py:51](../../server/app/routers/documents/crud.py#L51)；契约键名差异见 **RD-10 → RW-304** |
+| B3-01 | `GET /documents` 增加 `sort` | DONE | [crud.py:53](../../server/app/routers/documents/crud.py#L53)：7 键白名单、未知 400，契约对齐见 REWORK §7.6 |
 | B3-02 | `GET /documents/facets` 聚合 | DONE | [facets.py](../../server/app/routers/documents/facets.py)；原崩溃 **RD-01 已由 RW-101 修复**（REWORK §7.1） |
-| B3-03 | 书架「全选筛选结果」接入 `/documents/ids` | DONE | API 见 [imports.py:215](../../server/app/routers/imports.py#L215)；5000/`truncated` 差异见 **RD-17 → RW-304**；前端接入随 RW-504 |
+| B3-03 | 书架「全选筛选结果」接入 `/documents/ids` | DONE | [documents/ids.py](../../server/app/routers/documents/ids.py)：全筛选 + 5000/`truncated`（REWORK §7.6）；前端接入随 RW-504 |
 | B3-04 | 书架相关索引迁移 | DONE | `0009_library_indexes`；partial index 问题见 **RD-14** |
 | B3-05 | `useLibraryFilters`：筛选状态 URL 化 | PARTIAL | 只有 `quality` 一个 URL 参数（[library/page.tsx:80](../../src/app/library/page.tsx#L80)）；**RD-11 → RW-504** |
 | B3-06 | 分类侧栏：搜索/折叠/隐藏 0 本/置顶/重命名 | PARTIAL | 无分类侧栏组件；**RD-11 → RW-504（RD-B）** |
@@ -102,12 +102,12 @@
 |---|---|---|---|
 | B4-01 | 迁移 `0010_reading_queue_reviews` + 模型 + 回填 | DONE | 迁移头 `0010`；[models.py:206-239](../../server/app/models.py#L206-L239) |
 | B4-02 | `review_scheduler.py` SM-2 lite 纯函数 | DONE | [review_scheduler.py](../../server/app/services/review_scheduler.py)；`now` 注入问题见 **RD-18 → RW-602** |
-| B4-03 | 阅读队列 API（增删改/重排/幂等） | DONE | [review.py:70-207](../../server/app/routers/review.py#L70-L207)；契约差异见 **RD-07 → RW-302** |
-| B4-04 | 复习 API（due/rating/snooze/stats） | DONE | [review.py](../../server/app/routers/review.py)；契约/时区字段见 **RD-07/RD-08 → RW-302/303** |
-| B4-05 | 标注创建时建 review 行 | PARTIAL | 全仓无 `ensure_review_row`；**RD-09 → RW-505** |
+| B4-03 | 阅读队列 API（增删改/重排/幂等） | DONE | [review.py:180-379](../../server/app/routers/review.py#L180-L379)：`/reading-queue`、auto-add/next、`ordered_ids`（REWORK §7.6） |
+| B4-04 | 复习 API（due/rating/snooze/stats） | DONE | [review.py:384-607](../../server/app/routers/review.py#L384-L607)：四档评分、highlight/note 过滤、`preview`、5 字段 stats（REWORK §7.6） |
+| B4-05 | 标注创建时建 review 行 | PARTIAL | `ensure_review_row` 已存在但只在 `rate` 时按需建行（[review_service.py:17](../../server/app/services/review_service.py#L17)），标注创建挂钩仍缺；**RD-09 → RW-505** |
 | B4-06 | 队列页/回顾页 Tab + 队列排序 UI | PARTIAL | 只有 `/review` 页，无 `/queue` 页；**RD-11 → RW-505** |
 | B4-07 | 复习卡评分、快捷键、间隔预览 | PARTIAL | `/review` 页无评分 UI（grep 无 again/hard/good/easy）；**RD-11 → RW-505** |
-| B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | 无 `datetime.ts`；UTC 判「今天」原样保留；**RD-12 → RW-502/RW-303** |
+| B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | 服务端本地日界已由 RW-303 提供（`/reviews/stats?tz_offset_minutes`）；前端仍无 `datetime.ts`、UTC 判「今天」原样保留；**RD-12 → RW-502** |
 | B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py` 等存在；前端队列/复习测试缺失；**RW-601** |
 
 ## B5 · 语义检索 / RAG — NO-GO（1/12 + 10 SKIPPED）
@@ -131,7 +131,7 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R1/R2 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **85 passed**、`npm run build` 成功（REWORK §7） |
+| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R3 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **85 passed**、`npm run build` 成功（REWORK §7） |
 | B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做；**RD-11 + D5 → R5** |
 | B6-03 | 数据清理（逐次授权） | DONE | [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)：4 条 operation log + 备份 `20261027_004916` |
 | B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20** |
