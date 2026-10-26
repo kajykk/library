@@ -28,6 +28,7 @@ import {
   reviewAnnotations,
 } from '@/lib/api/client';
 import { convertAnnotationToNote } from '@/lib/dataSource';
+import { localDayStartIso } from '@/lib/datetime';
 import { useToast } from '@/components/ui';
 
 type ReviewFilter = 'all' | 'highlight' | 'note' | 'bookmark';
@@ -40,10 +41,6 @@ const TYPE_META: Record<string, { label: string; icon: typeof Highlighter; color
 
 function typeMeta(type: string): { label: string; icon: typeof Highlighter; color: string } {
   return TYPE_META[type] ?? { label: type, icon: StickyNote, color: 'text-gray-400' };
-}
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 export default function ReviewPage() {
@@ -66,33 +63,31 @@ function ReviewPageInner() {
   const [convertedNotes, setConvertedNotes] = useState<Record<string, string>>({});
   const [converting, setConverting] = useState<string | null>(null);
 
+  const todayStartIso = localDayStartIso();
   const reviewQuery = useQuery({
     queryKey: ['annotations', 'review'],
     queryFn: () => reviewAnnotations({ limit: 200 }),
   });
+  const todayQuery = useQuery({
+    queryKey: ['annotations', 'review', 'today', todayStartIso],
+    queryFn: () => reviewAnnotations({ since: todayStartIso, limit: 200 }),
+  });
   const allHits = useMemo(() => reviewQuery.data ?? [], [reviewQuery.data]);
-  const isLoading = reviewQuery.isLoading;
+  const todayHits = useMemo(() => todayQuery.data ?? [], [todayQuery.data]);
+  const isLoading = reviewQuery.isLoading || (onlyToday && todayQuery.isLoading);
 
-  const hits = useMemo(() => {
-    if (filter === 'all') return allHits;
-    return allHits.filter((h) => h.type === filter);
-  }, [allHits, filter]);
+  const visible = useMemo(() => {
+    const base = onlyToday ? todayHits : allHits;
+    if (filter === 'all') return base;
+    return base.filter((h) => h.type === filter);
+  }, [allHits, todayHits, filter, onlyToday]);
 
-  const todayCount = useMemo(() => {
-    const todayPrefix = todayIso();
-    return allHits.filter((h) => h.created_at.slice(0, 10) === todayPrefix).length;
-  }, [allHits]);
+  const todayCount = todayHits.length;
 
   // 过滤条件变化时游标越界重置
   useEffect(() => {
     setCursor(0);
   }, [filter, onlyToday]);
-
-  const visible = useMemo(() => {
-    if (!onlyToday) return hits;
-    const todayPrefix = todayIso();
-    return hits.filter((h) => h.created_at.slice(0, 10) === todayPrefix);
-  }, [hits, onlyToday]);
 
   const current: AnnotationHit | null =
     visible.length > 0 ? visible[Math.min(cursor, visible.length - 1)] ?? null : null;
@@ -155,6 +150,7 @@ function ReviewPageInner() {
           <button
             onClick={() => {
               reviewQuery.refetch();
+              todayQuery.refetch();
               queryClient.invalidateQueries({ queryKey: ['annotations'] });
               toast.success('已刷新');
             }}

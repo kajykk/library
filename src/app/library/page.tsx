@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
+import { useState, useEffect, useMemo, Suspense } from 'react';
 import { Book, Category, exportData, importData } from '@/lib/db';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -10,7 +10,6 @@ import {
   deleteBookCompletely,
   addCategoryByName,
   deleteCategoryAndReset,
-  getBookCoverUrl,
   ShelfFilter,
 } from '@/lib/dataSource';
 import type { QualityFilter } from '@/lib/api/client';
@@ -18,7 +17,6 @@ import { getQualitySummary, type QualitySummary } from '@/lib/api/client';
 import { useDataSourceStatus } from '@/lib/useDataSourceStatus';
 import { formatFileSize, formatDate } from '@/lib/utils';
 import {
-  BookOpen,
   Search,
   Upload,
   FolderPlus,
@@ -33,8 +31,8 @@ import {
   Eye
 } from 'lucide-react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
+import BookCover from '@/components/BookCover';
 import BookEditModal from '@/components/BookEditModal';
 import StatisticsPanel from '@/components/StatisticsPanel';
 import OnboardingBanner from '@/components/OnboardingBanner';
@@ -105,7 +103,6 @@ function LibraryPageInner() {
     startedAt: number;
     finishedAt: number | null;
   } | null>(null);
-  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 300);
@@ -201,41 +198,6 @@ function LibraryPageInner() {
   };
 
   const refetchLibrary = () => queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY });
-
-  // blob URL 生命周期管理：镜像最新 map，替换/卸载时 revoke，防止封面对象 URL 泄漏
-  const coverUrlsRef = useRef<Record<string, string>>({});
-  useEffect(() => {
-    coverUrlsRef.current = coverUrls;
-  }, [coverUrls]);
-  useEffect(() => {
-    return () => {
-      Object.values(coverUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
-      coverUrlsRef.current = {};
-    };
-  }, []);
-  // 当前书库内存活的书籍 id（含未渲染的），用于丢弃迟到返回的封面请求
-  const liveBookIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    liveBookIdsRef.current = new Set(books.map((b) => b.id));
-  }, [books]);
-
-  // 清理已不在书库中的封面 blob URL（删除/换库场景），避免泄漏
-  useEffect(() => {
-    const liveIds = new Set(books.map((b) => b.id));
-    setCoverUrls((prev) => {
-      let changed = false;
-      const next: Record<string, string> = {};
-      for (const [id, url] of Object.entries(prev)) {
-        if (liveIds.has(id)) {
-          next[id] = url;
-        } else {
-          URL.revokeObjectURL(url);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [books]);
 
   const runImport = async (files: File[], categoryOf: (file: File) => string) => {
     setImporting(true);
@@ -413,43 +375,6 @@ function LibraryPageInner() {
     reader.readAsText(file);
     e.target.value = '';
   };
-
-  // 封面按需加载：只为已加载的书目拉取（分页本身已限制在 PAGE_STEP 条/页）
-  // inflight 去重：快速切换筛选条件导致 effect 重跑时，同一本书不重复发起请求
-  // 无封面（coverPath 为空）直接跳过：否则每个无封面书籍都会产生一次 404 请求，
-  // 浏览器会把每个 404 都打进控制台（书架页一次刷出上百条），且毫无意义
-  const inflightCoversRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const targets = books.filter(
-      (b) => b.coverPath && !coverUrls[b.id] && !inflightCoversRef.current.has(b.id),
-    );
-    if (targets.length === 0) return;
-    let cancelled = false;
-    targets.forEach((book) => {
-      inflightCoversRef.current.add(book.id);
-      getBookCoverUrl(book.id)
-        .then((url) => {
-          if (cancelled || !url) return;
-          setCoverUrls((prev) => {
-            if (prev[book.id]) return prev;
-            // 请求期间书籍已被删除/移出书库 → 直接回收该 blob URL
-            if (!liveBookIdsRef.current.has(book.id)) {
-              URL.revokeObjectURL(url);
-              return prev;
-            }
-            return { ...prev, [book.id]: url };
-          });
-        })
-        .catch((err) => console.warn('加载封面失败:', book.id, err))
-        .finally(() => {
-          inflightCoversRef.current.delete(book.id);
-        });
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [books]);
 
   const openReader = (book: Book) => {
     router.push(`/reader/${book.id}`);
@@ -874,20 +799,7 @@ function LibraryPageInner() {
                         className="aspect-[3/4] bg-gray-100 relative cursor-pointer overflow-hidden"
                         onClick={() => openReader(book)}
                       >
-                        {coverUrls[book.id] ? (
-                          <Image
-                            src={coverUrls[book.id]!}
-                            alt={book.title}
-                            fill
-                            unoptimized
-                            sizes="(max-width: 768px) 50vw, (max-width: 1024px) 33vw, 20vw"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <BookOpen className="w-12 h-12 text-gray-300" />
-                          </div>
-                        )}
+                        <BookCover book={book} variant="grid" />
                         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors" />
                         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                           <button onClick={() => openReader(book)} className="w-full py-2 bg-white/90 text-gray-900 rounded text-sm font-medium hover:bg-white transition-colors">
@@ -943,20 +855,7 @@ function LibraryPageInner() {
                         className="w-16 h-20 bg-gray-100 rounded flex-shrink-0 overflow-hidden cursor-pointer"
                         onClick={() => openReader(book)}
                       >
-                        {coverUrls[book.id] ? (
-                          <Image
-                            src={coverUrls[book.id]!}
-                            alt={book.title}
-                            width={64}
-                            height={80}
-                            unoptimized
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <BookOpen className="w-6 h-6 text-gray-300" />
-                          </div>
-                        )}
+                        <BookCover book={book} variant="list" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <h3 className="font-medium text-gray-900 truncate">{book.title}</h3>

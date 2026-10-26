@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R4 完成**（2026-10-27）；R5 待开始 |
-| 当前任务 | RW-501（R5 首项）；RW-504/505 需先取 RD-B 决策 |
-| 最后更新 | 2026-10-27（R4 `reextract` 真实现 + 质量 summary 口径/审计内存） |
+| 当前批次 | **返工 R1–R5（最小集）完成**（2026-10-27）；RW-504/505 待 RD-B |
+| 当前任务 | RD-B 决策；然后 R5 剩余 RW-504/505 |
+| 最后更新 | 2026-10-27（R5 导航入口 + 本地日界/仅今天 + 封面缓存） |
 | 阻塞项 | RD-B（R5 前端范围）、RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围 |
-| 下一步 | R5：RW-501 → RW-502 → RW-503 → RD-B → RW-504/505 |
+| 下一步 | RD-B → RW-504/505 → R6（测试/限流）→ R7（B5 重评） |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -90,11 +90,11 @@
 | B3-05 | `useLibraryFilters`：筛选状态 URL 化 | PARTIAL | 只有 `quality` 一个 URL 参数（[library/page.tsx:80](../../src/app/library/page.tsx#L80)）；**RD-11 → RW-504** |
 | B3-06 | 分类侧栏：搜索/折叠/隐藏 0 本/置顶/重命名 | PARTIAL | 无分类侧栏组件；**RD-11 → RW-504（RD-B）** |
 | B3-07 | 工具栏：排序、活跃筛选 chips、清除全部 | PARTIAL | 现有 shelf/quality chips，无统一工具栏与「清除全部」；**RD-11 → RW-504** |
-| B3-08 | `BookCard` + `BookCover`（独立封面加载） | PARTIAL | 无组件目录、无 `coverCache.ts`；封面仍走页面级 `coverUrls`；**RD-11 → RW-503** |
+| B3-08 | `BookCard` + `BookCover`（独立封面加载） | PARTIAL | **封面部分已完成（RW-503）**：[BookCover.tsx](../../src/components/BookCover.tsx) + [coverCache.ts](../../src/lib/coverCache.ts)（LRU 200/引用计数/inflight 去重），页面级 `coverUrls` 已删（REWORK §7.8）；未拆 `BookCard`、无 60s 负缓存（F-11），随 **RD-B** 决定 |
 | B3-09 | 无限滚动 + 虚拟化 + 预取 | PARTIAL | 虚拟化仅笔记页（`@tanstack/react-virtual`）；书架未接；**RD-11 → RW-504（RD-B）** |
 | B3-10 | 骨架屏/空态/错误态 | DONE | [library/page.tsx:818](../../src/app/library/page.tsx#L818) 骨架；[:847-861](../../src/app/library/page.tsx#L847-L861) 空态 |
-| B3-11 | 移动端抽屉/导航、暗色、无障碍 | PARTIAL | 未实现；**RD-11 + D5（暗色范围）→ R5** |
-| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；无组件测试与 B3 报告；**RW-601** |
+| B3-11 | 移动端抽屉/导航、暗色、无障碍 | PARTIAL | **导航入口与窄屏图标态已由 RW-501 补齐**（`aria-label/title`，REWORK §7.8）；抽屉、暗色范围（D5）仍缺 |
+| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；R5 新增 Nav/coverCache/datetime 单测；仍无 BookCard 组件测试与 B3 报告；**RW-601** |
 
 ## B4 · 阅读队列 + 间隔复习 — PARTIAL（4/9）
 
@@ -107,7 +107,7 @@
 | B4-05 | 标注创建时建 review 行 | PARTIAL | `ensure_review_row` 已存在但只在 `rate` 时按需建行（[review_service.py:17](../../server/app/services/review_service.py#L17)），标注创建挂钩仍缺；**RD-09 → RW-505** |
 | B4-06 | 队列页/回顾页 Tab + 队列排序 UI | PARTIAL | 只有 `/review` 页，无 `/queue` 页；**RD-11 → RW-505** |
 | B4-07 | 复习卡评分、快捷键、间隔预览 | PARTIAL | `/review` 页无评分 UI（grep 无 again/hard/good/easy）；**RD-11 → RW-505** |
-| B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | 服务端本地日界已由 RW-303 提供（`/reviews/stats?tz_offset_minutes`）；前端仍无 `datetime.ts`、UTC 判「今天」原样保留；**RD-12 → RW-502** |
+| B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | **前两项已完成（RW-502）**：[datetime.ts](../../src/lib/datetime.ts) + `since` 服务端过滤（REWORK §7.8）；`buildDailyNoteContent` 仍只有两参，「今日复习」段未接入（B4-08 剩余项，未纳入返工清单） |
 | B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py` 等存在；前端队列/复习测试缺失；**RW-601** |
 
 ## B5 · 语义检索 / RAG — NO-GO（1/12 + 10 SKIPPED）
@@ -131,7 +131,7 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R4 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **85 passed**、`npm run build` 成功（REWORK §7） |
+| B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R5 后：后端 **195 passed**、`npm run typecheck` 无错误、`npm test` **97 passed (17 files)**、`npm run build` 成功（REWORK §7） |
 | B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做；**RD-11 + D5 → R5** |
 | B6-03 | 数据清理（逐次授权） | DONE | [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)：4 条 operation log + 备份 `20261027_004916` |
 | B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20** |
@@ -157,9 +157,9 @@
 | 日期 | 位置 | 现象 | 影响 | 建议批次 | 状态 |
 |---|---|---|---|---|---|
 | 2026-10-26 | [server/app/models.py:28](../../server/app/models.py#L28) | `utcnow()` 返回 tz-aware，SQLite 落库为 naive UTC 文本 | 直接比较会 TypeError 或静默错判 | B4-01/B4-02 的 `as_utc_naive`/`from_utc_naive` | FIXED |
-| 2026-10-26 | [src/lib/dataSource.ts:362](../../src/lib/dataSource.ts#L362) | 本地 `shelf=recent` 先 `slice` 再过滤 | 「最近添加」莫名少于 20 本 | **RD-12 → RW-502** | OPEN |
+| 2026-10-26 | [src/lib/dataSource.ts:362](../../src/lib/dataSource.ts#L362) | 本地 `shelf=recent` 先 `slice` 再过滤 | 「最近添加」莫名少于 20 本 | **RD-12 → RW-502** | FIXED（REWORK §7.8） |
 | 2026-10-26 | [server/app/routers/documents/crud.py:80](../../server/app/routers/documents/crud.py#L80) | `created_at` 无稳定 tiebreaker | 分页重复/漏项 | **RD-10 → RW-304** | OPEN |
-| 2026-10-26 | [src/app/review/page.tsx:45](../../src/app/review/page.tsx#L45) | 用 UTC 日期判断「今天」 | 东八区 0–8 点显示错误 | **RD-12 → RW-502** | OPEN |
+| 2026-10-26 | [src/app/review/page.tsx:45](../../src/app/review/page.tsx#L45) | 用 UTC 日期判断「今天」 | 东八区 0–8 点显示错误 | **RD-12 → RW-502** | FIXED（REWORK §7.8） |
 | 2026-10-26 | [.gitignore](../../.gitignore) | `docs/*` 不跨 `/` 导致路线图被忽略 | 换机器丢进度 | B0-01 | FIXED（已提交） |
 | 2026-10-26 | [README.md:3](../../README.md#L3) | 写「Next.js 14」，实际 `next@^15.5.28` | 文档误导 | **RD-20** | OPEN |
 | 2026-10-26 | [src/lib/__tests__/quality.test.ts](../../src/lib/__tests__/quality.test.ts) | 文件名与内容不符（测 epub/foliate/fuzzy/fts） | 覆盖情况误判 | 后续质量测试另建文件 | OPEN |
@@ -176,6 +176,7 @@
 | 2026-10-27 | R1 | R2 | 用户（「你决定」） | R1 提交 `0d3217d`；R2 = RW-201/202 |
 | 2026-10-27 | R2 | R3 | 用户（按已批准清单继续） | R2 提交 `687799a`；R3 = RW-301–304 |
 | 2026-10-27 | R3 | R4 | 用户（「真实现」：RD-A 选 A） | R3 提交 `0bf75bc`；R4 = RW-401/402 |
+| 2026-10-27 | R4 | R5（最小集） | 用户（「继续」，按 REWORK 默认建议） | R4 提交 `a8cffbf`；R5 = RW-501/502/503；RW-504/505 等 RD-B |
 
 ## 任务书偏离记录
 

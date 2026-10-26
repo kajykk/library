@@ -286,7 +286,7 @@ function matchesLocalFilters(book: Book, query: LibraryPageQuery): boolean {
   if (query.category && book.category !== query.category) return false;
   if (query.author && !(book.author || '').includes(query.author)) return false;
   if (query.shelf && query.shelf !== 'all') {
-    if (query.shelf === 'recent') return true; // 由调用方先截取最新 N 本
+    if (query.shelf === 'recent') return true; // 最近添加 = 已按 addedAt 倒序，无额外条件
     if (bookStatus(book) !== query.shelf) return false;
   }
   return true;
@@ -359,8 +359,8 @@ export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryP
   if (mode === 'local') {
     await initDB();
     const all = (await getBooks()).sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0));
-    const base = query.shelf === 'recent' ? all.slice(0, query.limit) : all;
-    const filtered = base.filter((book) => matchesLocalFilters(book, query));
+    // 先按筛选条件过滤再截断：先 slice 会让带搜索/分类的「最近添加」漏掉目标书
+    const filtered = all.filter((book) => matchesLocalFilters(book, query));
     const slice = filtered.slice(query.offset, query.offset + query.limit);
     return {
       books: slice,
