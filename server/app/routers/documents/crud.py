@@ -48,6 +48,8 @@ def list_documents(
     author: str | None = None,
     status: str | None = None,
     quality: str | None = None,
+    format: str | None = None,
+    language: str | None = None,
     sort: str = "created_at_desc",
     include_deleted: bool = False,
     include_content: bool = False,
@@ -71,6 +73,8 @@ def list_documents(
         author=author,
         status=status,
         quality=quality,
+        format=format,
+        language=language,
     )
     # 排序（B3-01）：末位加 Document.id tiebreaker，避免 offset 分页重复/漏项
     sort_map = {

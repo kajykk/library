@@ -6,7 +6,12 @@ from fastapi import HTTPException
 from sqlalchemy import or_, cast, String as SAString
 
 from ...models import Document, DocumentQuality, DocumentTag, Tag
-from ...services.sql_utils import escape_like, trimmed_content_length_expr
+from ...services.sql_utils import (
+    escape_like,
+    language_norm_expr,
+    normalize_language_code,
+    trimmed_content_length_expr,
+)
 from ...config import get_settings
 
 # quality 筛选值（合法集合）
@@ -125,8 +130,10 @@ def apply_document_filters(
     author: str | None = None,
     status: str | None = None,
     quality: str | None = None,
+    format: str | None = None,
+    language: str | None = None,
 ):
-    """列表与计数共用同一套过滤条件，避免两处条件漂移导致"显示 N 本、翻页却少几本"。"""
+    """列表、计数与分面共用同一套过滤条件，避免两处条件漂移导致"显示 N 本、翻页却少几本"。"""
     stmt = stmt.where(Document.deleted_at.is_(None) if not include_deleted else True)
     stmt = apply_types_filter(stmt, types)
     if type:
@@ -149,6 +156,12 @@ def apply_document_filters(
         )
     if author:
         stmt = stmt.where(Document.author.ilike(f"%{escape_like(author)}%", escape="\\"))
+    # format 是文件格式（epub/pdf/…），与 type（文档类型）不是一回事；库里的 format 存小写
+    if format:
+        stmt = stmt.where(Document.format == format.strip().lower())
+    # language 按归一化值匹配：language=en 要能命中 en-US、ENG
+    if language:
+        stmt = stmt.where(language_norm_expr(Document.language) == normalize_language_code(language))
     if quality:
         if db is None:
             raise HTTPException(status_code=500, detail="quality 筛选需要 db session")

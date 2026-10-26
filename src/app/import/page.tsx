@@ -4,29 +4,40 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, FolderSearch, Upload, AlertTriangle, Copy, FileX, CheckCircle2, Loader2 } from 'lucide-react';
 
+interface ScanItem {
+  dir_id: string;
+  rel_path: string;
+  name: string;
+  size: number;
+}
+
 interface ScanResult {
   total: number;
-  importable: Array<{ path: string; name: string; size: number; ext: string }>;
-  bad_files: Array<{ path: string; size: number; reason: string }>;
-  duplicates: Array<{ path: string; size: number; duplicate_of: string }>;
-  unsupported: Array<{ path: string; size: number; ext: string }>;
+  importable: Array<ScanItem & { ext: string }>;
+  bad_files: Array<ScanItem & { reason: string }>;
+  duplicates: Array<ScanItem & { duplicate_of: string }>;
+  unsupported: Array<ScanItem & { ext: string }>;
   truncated: boolean;
-  directories: Record<string, { total: number; importable: number; bad_files: number; duplicates: number; unsupported: number }>;
+  directories: Record<string, { label: string; total: number; importable: number; bad_files: number; duplicates: number; unsupported: number }>;
 }
 
 interface ImportResult {
   imported: number;
   skipped: number;
   failed: number;
-  results: Array<{ path: string; status: string; reason?: string; document_id?: string }>;
+  results: Array<{ dir_id: string; rel_path: string; status: string; reason?: string; document_id?: string }>;
 }
 
 type Step = 'scan' | 'review' | 'result';
 
+// 服务端只认 dir_id + rel_path，绝对路径不再是请求体的输入
+type DirKey = string;
+const selKey = (dirId: string, relPath: string): DirKey => `${dirId}|${relPath}`;
+
 export default function ImportPage() {
   const [step, setStep] = useState<Step>('scan');
   const [scanData, setScanData] = useState<ScanResult | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<DirKey>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +51,7 @@ export default function ImportPage() {
       if (!resp.ok) throw new Error(`扫描失败：${resp.status}`);
       const data: ScanResult = await resp.json();
       setScanData(data);
-      setSelected(new Set(data.importable.map((f) => f.path)));
+      setSelected(new Set(data.importable.map((f) => selKey(f.dir_id, f.rel_path))));
       setStep('review');
     } catch (err) {
       setError((err as Error).message);
@@ -52,17 +63,35 @@ export default function ImportPage() {
     try {
       setImporting(true);
       setError(null);
-      const resp = await fetch('/api/imports/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Token': localStorage.getItem('kb_api_token') || '',
-        },
-        body: JSON.stringify({ paths: Array.from(selected), confirm: true }),
-      });
-      if (!resp.ok) throw new Error(`导入失败：${resp.status}`);
-      const result: ImportResult = await resp.json();
-      setImportResult(result);
+      // 按目录分组，每组一次 execute；单个目录单次仍最多 500 个文件
+      const byDir = new Map<string, string[]>();
+      for (const item of scanData.importable) {
+        if (!selected.has(selKey(item.dir_id, item.rel_path))) continue;
+        const list = byDir.get(item.dir_id) ?? [];
+        list.push(item.rel_path);
+        byDir.set(item.dir_id, list);
+      }
+      const merged: ImportResult = { imported: 0, skipped: 0, failed: 0, results: [] };
+      for (const [dirId, relPaths] of byDir) {
+        const resp = await fetch('/api/imports/execute', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Token': localStorage.getItem('kb_api_token') || '',
+          },
+          body: JSON.stringify({ dir_id: dirId, rel_paths: relPaths, confirm: true }),
+        });
+        if (!resp.ok) {
+          const detail = (await resp.json().catch(() => null))?.detail ?? resp.status;
+          throw new Error(`导入失败：${detail}`);
+        }
+        const part: ImportResult = await resp.json();
+        merged.imported += part.imported;
+        merged.skipped += part.skipped;
+        merged.failed += part.failed;
+        merged.results.push(...part.results);
+      }
+      setImportResult(merged);
       setStep('result');
     } catch (err) {
       setError((err as Error).message);
@@ -71,11 +100,12 @@ export default function ImportPage() {
     }
   };
 
-  const toggleSelect = (path: string) => {
+  const toggleSelect = (dirId: string, relPath: string) => {
+    const key = selKey(dirId, relPath);
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -131,7 +161,7 @@ export default function ImportPage() {
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-semibold text-gray-900">扫描结果</h2>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setSelected(new Set(scanData.importable.map((f) => f.path)))} className="text-sm text-primary-600">全选</button>
+                  <button onClick={() => setSelected(new Set(scanData.importable.map((f) => selKey(f.dir_id, f.rel_path))))} className="text-sm text-primary-600">全选</button>
                   <button onClick={() => setSelected(new Set())} className="text-sm text-gray-500">全不选</button>
                 </div>
               </div>
@@ -173,16 +203,16 @@ export default function ImportPage() {
               </div>
               <div className="max-h-96 overflow-y-auto">
                 {scanData.importable.map((f) => (
-                  <label key={f.path} className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-50">
+                  <label key={selKey(f.dir_id, f.rel_path)} className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50 cursor-pointer border-b border-gray-50">
                     <input
                       type="checkbox"
-                      checked={selected.has(f.path)}
-                      onChange={() => toggleSelect(f.path)}
+                      checked={selected.has(selKey(f.dir_id, f.rel_path))}
+                      onChange={() => toggleSelect(f.dir_id, f.rel_path)}
                       className="rounded"
                     />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-900 truncate">{f.name}</p>
-                      <p className="text-xs text-gray-400">{(f.size / 1024 / 1024).toFixed(1)} MB · {f.ext.toUpperCase()}</p>
+                      <p className="text-xs text-gray-400">{f.rel_path} · {(f.size / 1024 / 1024).toFixed(1)} MB · {f.ext.toUpperCase()}</p>
                     </div>
                   </label>
                 ))}

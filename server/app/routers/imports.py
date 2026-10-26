@@ -1,7 +1,6 @@
 """导入与批量治理 API（B2-03/04/06/07/08/09）：目录扫描、导入、批量修改/软删除、封面、重提取、语言归一化、孤儿隔离。"""
 
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -11,11 +10,20 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import get_db
 from ..models import Document, DocumentQuality, utcnow
-from ..services.directory_scan import scan_all_import_dirs
+from ..services.directory_scan import (
+    ImportPathError,
+    list_import_dirs,
+    resolve_import_dir,
+    resolve_import_path,
+    scan_all_import_dirs,
+    validate_rel_path,
+)
 from ..services.ingest import finalize_ingest, validate_format, IngestError
 from ..services.file_storage import import_file
 from ..services.operation_log import record
-from ..services.quality_audit import normalize_language, scan_orphans
+from ..services.orphan_quarantine import QuarantineError
+from ..services.orphan_quarantine import quarantine as quarantine_files
+from ..services.quality_audit import normalize_language
 
 router = APIRouter(tags=["imports"])
 
@@ -33,7 +41,8 @@ class ScanResponse(BaseModel):
 
 
 class ImportRequest(BaseModel):
-    paths: list[str]
+    dir_id: str
+    rel_paths: list[str]
     confirm: bool = False
 
 
@@ -80,7 +89,17 @@ class NormalizeLanguageRequest(BaseModel):
 
 
 class OrphanQuarantineRequest(BaseModel):
+    rel_paths: list[str]
     confirm: bool = False
+
+
+class OrphanQuarantineResponse(BaseModel):
+    moved: int
+    skipped: int
+    failed: int
+    operation_id: str | None = None
+    quarantine_dir: str | None = None
+    results: list[dict]
 
 
 class BatchResponse(BaseModel):
@@ -91,10 +110,15 @@ class BatchResponse(BaseModel):
 
 # ---- 目录扫描 ----
 
+@router.get("/imports/dirs")
+def get_import_dirs():
+    """白名单目录列表：客户端只拿到 dir_id，服务器路径不作为后续请求的输入。"""
+    return {"dirs": list_import_dirs()}
+
+
 @router.get("/imports/scan", response_model=ScanResponse)
 def scan_import_dirs():
-    result = scan_all_import_dirs()
-    return ScanResponse(**result)
+    return ScanResponse(**scan_all_import_dirs())
 
 
 # ---- 执行导入 ----
@@ -103,8 +127,23 @@ def scan_import_dirs():
 def execute_import(req: ImportRequest, db: Session = Depends(get_db)):
     if not req.confirm:
         raise HTTPException(status_code=400, detail="需要 confirm: true")
-    if len(req.paths) > 500:
+    if len(req.rel_paths) > 500:
         raise HTTPException(status_code=400, detail="单次最多 500 个文件")
+    if not req.rel_paths:
+        raise HTTPException(status_code=400, detail="rel_paths 不能为空")
+    # 白名单是唯一的路径来源：未配置 KB_IMPORT_DIRS 或 dir_id 不认识就直接拒绝，
+    # 绝不退化成「客户端传什么路径就导什么」——那等于把服务器任意可读文件搬进书库。
+    if resolve_import_dir(req.dir_id) is None:
+        raise HTTPException(status_code=400, detail="dir_id 不在导入白名单中")
+    # 形状不合法（绝对路径 / `..` / 空）整批拒绝：这是越权尝试，不是「部分文件缺失」
+    for rel_path in req.rel_paths:
+        try:
+            validate_rel_path(rel_path)
+        except ImportPathError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"rel_paths 只能是白名单目录内的相对路径（{exc}）",
+            )
 
     settings = get_settings()
     max_size = settings.upload_max_size_mb * 1024 * 1024
@@ -112,41 +151,48 @@ def execute_import(req: ImportRequest, db: Session = Depends(get_db)):
     imported = skipped = failed = 0
     doc_ids = []
 
-    for path_str in req.paths:
-        src = Path(path_str)
+    for rel_path in req.rel_paths:
+        item = {"dir_id": req.dir_id, "rel_path": rel_path}
+        try:
+            src = resolve_import_path(req.dir_id, rel_path)
+        except ImportPathError as exc:
+            failed += 1
+            results.append({**item, "status": "failed", "reason": str(exc)})
+            continue
+
         if not src.is_file():
-            results.append({"path": path_str, "status": "failed", "reason": "file_not_found"})
+            results.append({**item, "status": "failed", "reason": "file_not_found"})
             failed += 1
             continue
         try:
             fmt = validate_format(src.name)
             doc_id = uuid.uuid4()
-            rel_path, size, sha256 = import_file(src, doc_id, fmt, max_size)
+            rel_file, size, sha256 = import_file(src, doc_id, fmt, max_size)
             outcome = finalize_ingest(
                 db,
                 doc_id=doc_id,
                 filename=src.name,
                 fmt=fmt,
-                rel_path=rel_path,
+                rel_path=rel_file,
                 file_size=size,
                 sha256=sha256,
                 collection_id=None,
                 source="directory",
-                source_path=path_str,
+                source_path=str(src),
             )
             if outcome.status == "imported":
                 imported += 1
                 doc_ids.append(str(doc_id))
-                results.append({"path": path_str, "status": "imported", "document_id": str(doc_id)})
+                results.append({**item, "status": "imported", "document_id": str(doc_id)})
             else:
                 skipped += 1
-                results.append({"path": path_str, "status": "skipped", "reason": outcome.reason})
+                results.append({**item, "status": "skipped", "reason": outcome.reason})
         except IngestError as e:
             failed += 1
-            results.append({"path": path_str, "status": "failed", "reason": e.message})
+            results.append({**item, "status": "failed", "reason": e.message})
         except Exception as e:
             failed += 1
-            results.append({"path": path_str, "status": "failed", "reason": str(e)[:200]})
+            results.append({**item, "status": "failed", "reason": str(e)[:200]})
 
     # 写操作日志
     if doc_ids:
@@ -331,44 +377,44 @@ def reextract_documents(req: ReextractRequest, db: Session = Depends(get_db)):
 
 # ---- 孤儿隔离 ----
 
-@router.post("/documents/orphans/quarantine", response_model=BatchResponse)
-def quarantine_orphans(req: OrphanQuarantineRequest, db: Session = Depends(get_db)):
+@router.post("/documents/orphans/quarantine", response_model=OrphanQuarantineResponse)
+def quarantine_orphans(
+    req: OrphanQuarantineRequest, db: Session = Depends(get_db)
+):
+    """只隔离勾选的文件；候选清单来自只读的 `GET /api/quality/orphans`。"""
     if not req.confirm:
         raise HTTPException(status_code=400, detail="需要 confirm: true")
+    try:
+        outcome = quarantine_files(db, req.rel_paths)
+    except QuarantineError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
 
-    result = scan_orphans(db)
-    orphans = result.get("orphan_files", []) + result.get("orphan_covers", [])
-
-    if not orphans:
-        return BatchResponse(status="applied", affected=0)
-
-    # 移动到隔离目录（不删除）
-    settings = get_settings()
-    quarantine_dir = Path(settings.data_dir) / "quarantine"
-    quarantine_dir.mkdir(parents=True, exist_ok=True)
-
-    moved = 0
-    for item in orphans[:500]:
-        rel = item["rel_path"]
-        src = Path(settings.data_dir) / rel
-        dst = quarantine_dir / Path(rel).name
-        try:
-            src.rename(dst)
-            moved += 1
-        except Exception:
-            pass
-
-    log = record(
-        db,
-        kind="orphan_quarantine",
-        document_ids=[],
-        before_state={"manifest": [{"rel_path": o["rel_path"]} for o in orphans[:500]]},
-        after_state={"quarantined": moved},
-        summary=f"孤儿隔离：{moved} 个文件",
-        undoable=True,
-    )
+    operation_id = None
+    if outcome["moved"]:
+        log = record(
+            db,
+            kind="orphan_quarantine",
+            document_ids=[],
+            before_state={"rel_paths": [r["rel_path"] for r in outcome["results"]]},
+            after_state={
+                "quarantine_dir": outcome["quarantine_dir"],
+                "moves": outcome["moves"],
+                "moved": outcome["moved"],
+            },
+            summary=f"孤儿隔离：{outcome['moved']} 个文件",
+            undoable=True,
+        )
+        operation_id = str(log.id)
     db.commit()
-    return BatchResponse(status="applied", affected=moved, operation_id=str(log.id))
+
+    return OrphanQuarantineResponse(
+        moved=outcome["moved"],
+        skipped=outcome["skipped"],
+        failed=outcome["failed"],
+        operation_id=operation_id,
+        quarantine_dir=outcome["quarantine_dir"],
+        results=outcome["results"],
+    )
 
 
 # ---- 补封面 ----

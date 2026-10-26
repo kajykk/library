@@ -79,6 +79,8 @@ def count_documents(
     author: str | None = None,
     status: str | None = None,
     quality: str | None = None,
+    format: str | None = None,
+    language: str | None = None,
     include_deleted: bool = False,
     db: Session = Depends(get_db),
 ):
@@ -95,51 +97,7 @@ def count_documents(
         author=author,
         status=status,
         quality=quality,
+        format=format,
+        language=language,
     )
     return CountOut(count=db.scalar(stmt) or 0)
-
-
-@router.get("/facets")
-def get_facets(db: Session = Depends(get_db)):
-    """B3-02: 聚合格式/语言/标签/作者分面"""
-    from ...models import Tag, DocumentTag
-
-    # 格式分面
-    fmt_rows = db.execute(
-        select(Document.format, sa_func.count(Document.id))
-        .where(Document.deleted_at.is_(None), Document.type.in_(("book", "pdf")))
-        .group_by(Document.format)
-    ).all()
-    formats = {str(r[0] or ""): r[1] for r in fmt_rows}
-
-    # 语言分面
-    lang_rows = db.execute(
-        select(Document.language, sa_func.count(Document.id))
-        .where(Document.deleted_at.is_(None), Document.type.in_(("book", "pdf")))
-        .group_by(Document.language)
-    ).all()
-    languages = {str(r[0] or ""): r[1] for r in lang_rows}
-
-    # 作者分面（top 50）
-    author_rows = db.execute(
-        select(Document.author, sa_func.count(Document.id))
-        .where(Document.deleted_at.is_(None), Document.type.in_(("book", "pdf")), Document.author != "")
-        .group_by(Document.author)
-        .order_by(sa_func.count(Document.id).desc())
-        .limit(50)
-    ).all()
-    authors = [{"name": str(r[0]), "count": r[1]} for r in author_rows]
-
-    # 标签分面（top 50）
-    tag_rows = db.execute(
-        select(Tag.name, sa_func.count(DocumentTag.document_id))
-        .join(DocumentTag, DocumentTag.tag_id == Tag.id)
-        .join(Document, Document.id == DocumentTag.document_id)
-        .where(Document.deleted_at.is_(None))
-        .group_by(Tag.name)
-        .order_by(sa_func.count(DocumentTag.document_id).desc())
-        .limit(50)
-    ).all()
-    tags = [{"name": str(r[0]), "count": r[1]} for r in tag_rows]
-
-    return {"formats": formats, "languages": languages, "authors": authors, "tags": tags}

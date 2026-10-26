@@ -6,6 +6,7 @@
 - upload: 上传与后台 OCR 分类
 - files: 原始文件 Range 流式下载与封面
 - stats: 书架统计与计数
+- facets: 书架分面聚合（格式/语言/标签/作者/分类）
 - tags: 标签设置
 - versions: 版本历史
 - metadata: 在线元数据
@@ -21,8 +22,8 @@ from ._shared import (
     settings,
 )
 
-# 先注册 /stats、/count 等单段静态路由，避免被 crud 的 /{doc_id} 抢先匹配
-from . import stats  # noqa: E402  isort: skip
+# 先注册 /stats、/count、/facets 等单段静态路由，避免被 crud 的 /{doc_id} 抢先匹配
+from . import facets, stats  # noqa: E402  isort: skip
 from . import crud, files, insight, metadata, tags, upload, versions  # noqa: E402  isort: skip
 
 from .crud import (  # noqa: E402

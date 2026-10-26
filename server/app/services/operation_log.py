@@ -10,6 +10,7 @@ from typing import TypedDict
 from sqlalchemy.orm import Session
 
 from ..models import Document, OperationLog, utcnow
+from .orphan_quarantine import restore_from_manifest
 
 MAX_DOCS_PER_OP = 500
 
@@ -160,9 +161,17 @@ def _undo_language_normalize(db: Session, log: OperationLog) -> UndoResult:
 
 
 def _undo_orphan_quarantine(db: Session, log: OperationLog) -> UndoResult:
-    """孤儿隔离撤销：文件移回原路径（简化：记录 manifest，此处只报成功）。"""
-    # 文件移回由调用方根据 manifest 操作；此处标记日志状态
-    return {"status": "restored", "restored": len(log.document_ids), "skipped": []}
+    """孤儿隔离撤销：按 manifest 把文件真正移回原相对路径。"""
+    quarantine_dir = (log.after_state or {}).get("quarantine_dir")
+    if not quarantine_dir:
+        return {"status": "not_undoable", "restored": 0, "skipped": []}
+    outcome = restore_from_manifest(quarantine_dir)
+    if not outcome["manifest_found"]:
+        # manifest 丢了就再没有依据判断哪些文件该回哪儿：保持日志 applied，不要伪装成已撤销
+        return {"status": "not_undoable", "restored": 0, "skipped": outcome["skipped"]}
+    if outcome["restored"] == 0 and outcome["skipped"]:
+        return {"status": "partial", "restored": 0, "skipped": outcome["skipped"]}
+    return {"status": "restored", "restored": outcome["restored"], "skipped": outcome["skipped"]}
 
 
 _UNDO_HANDLERS = {

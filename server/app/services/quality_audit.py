@@ -15,6 +15,7 @@ from ..database import SessionLocal
 from ..models import Document, DocumentQuality, utcnow
 from .file_storage import abs_path
 from .job_state import JobState
+from .sql_utils import LANGUAGE_ALIASES as _LANG_MAP
 from .sql_utils import trimmed_content_length_expr
 
 # 问题码（稳定字符串，前后端共用）
@@ -33,13 +34,6 @@ VALID_ISSUES = frozenset({
     ISSUE_SHORT_CONTENT, ISSUE_NO_COVER, ISSUE_UNCLASSIFIED,
     ISSUE_NEEDS_OCR, ISSUE_DUPLICATE_SHA, ISSUE_LANGUAGE_VARIANT,
 })
-
-# 语言归一化
-_LANG_MAP = {
-    "en-us": "en", "en-gb": "en", "eng": "en",
-    "zh-tw": "zh", "zh-hk": "zh", "zh-hans": "zh", "zh-hant": "zh", "cht": "zh", "chs": "zh",
-    "ja-jp": "ja", "jpn": "ja",
-}
 
 _job = JobState("quality_audit")
 
