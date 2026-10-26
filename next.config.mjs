@@ -3,6 +3,13 @@ const cspConnectSrc =
   process.env.NEXT_PUBLIC_CSP_CONNECT_SRC ||
   "'self' http: https: ws: wss:";
 
+// Next.js dev 的 HMR 运行时通过 eval 执行模块，需要 'unsafe-eval'；
+// 生产构建不引入该指令，保持 script-src 最小化。
+const isDev = process.env.NODE_ENV === 'development';
+const cspScriptSrc = isDev
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+  : "script-src 'self' 'unsafe-inline'";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -29,7 +36,7 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline'",
+              cspScriptSrc,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
