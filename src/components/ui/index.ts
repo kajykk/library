@@ -6,3 +6,5 @@ export { default as Drawer, DrawerHeader } from './Drawer';
 export { ToastProvider, useToast } from './Toast';
 export { DialogProvider, useDialog } from './ImperativeDialogs';
 export type { ConfirmOptions, PromptOptions } from './ImperativeDialogs';
+export { default as StatePanel } from './StatePanel';
+export { default as FilterChip } from './FilterChip';

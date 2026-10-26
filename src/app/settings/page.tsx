@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useDialog } from '@/components/ui';
 import Link from 'next/link';
 import {
@@ -22,6 +23,7 @@ import {
 } from '@/lib/api/client';
 import { getBooks, getCategories, exportData, getAllFileRecords, getAllCoverRecords, initDB } from '@/lib/db';
 import { resetModeCache } from '@/lib/dataSource';
+import { useDataSourceModeInvalidator } from '@/lib/useDataSourceMode';
 import { ArrowLeft, Settings2, Plug, DatabaseZap, CheckCircle2, XCircle, Loader2, Download, Upload, Globe, RefreshCw, Search, ShieldCheck, Sparkles, Gauge, BookOpen } from 'lucide-react';
 
 const CHECK_LABELS: Record<string, string> = {
@@ -40,6 +42,8 @@ interface MigrationState {
 
 export default function SettingsPage() {
   const dialog = useDialog();
+  const queryClient = useQueryClient();
+  const invalidateMode = useDataSourceModeInvalidator();
   const [apiBase, setApiBase] = useState('');
   const [apiToken, setApiToken] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'ok' | 'fail' | 'testing'>('unknown');
@@ -67,6 +71,10 @@ export default function SettingsPage() {
   useEffect(() => {
     setApiBase(getApiBaseUrl());
     setApiToken(getApiToken());
+    // 有 token 时自动跑一次健康检查（不阻塞页面）
+    if (getApiToken()) {
+      void runHealthCheck();
+    }
     let cancelled = false;
     const poll = async () => {
       try {
@@ -110,6 +118,10 @@ export default function SettingsPage() {
   const handleSaveAndTest = async () => {
     saveApiConfig(apiBase, apiToken);
     resetModeCache();
+    invalidateMode();
+    // 使 React Query 缓存失效，书架/搜索等页面无需刷新即可重新加载
+    await queryClient.invalidateQueries({ queryKey: ['dataSourceStatus'] });
+    await queryClient.invalidateQueries({ queryKey: ['documents'] });
     setConnectionStatus('testing');
     const ok = await checkHealth();
     setConnectionStatus(ok ? 'ok' : 'fail');

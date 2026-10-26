@@ -36,8 +36,9 @@ import {
   ApiAnnotation,
   ApiCollection,
   ApiDocument,
+  QualityFilter,
+  SystemHealth,
   annotationToNote,
-  checkHealth,
   countDocuments,
   createAnnotationApi,
   createCollection,
@@ -47,6 +48,8 @@ import {
   deleteDocument,
   fetchDocumentCoverBlobUrl,
   fetchDocumentFileArrayBuffer,
+  fetchSystemHealth,
+  getApiBaseUrl,
   getApiToken,
   getDocument,
   getLibraryStats,
@@ -70,6 +73,25 @@ import {
 
 export type DataSourceMode = 'api' | 'local';
 
+// ---------- 数据源状态契约（B0-03）----------
+
+export type DataSourceStatusMode = 'api' | 'local' | 'degraded' | 'unconfigured';
+export type DataSourceStatusReason = 'api_ok' | 'no_token' | 'health_failed' | 'checking';
+
+export interface DataSourceStatus {
+  mode: DataSourceStatusMode;
+  reason: DataSourceStatusReason;
+  baseUrl: string;
+  tokenConfigured: boolean;
+  health: SystemHealth | null;
+}
+
+const STATUS_CACHE_TTL_MS = 30_000;
+
+let statusCache: DataSourceStatus | null = null;
+let statusCacheAt = 0;
+let statusInFlight: Promise<DataSourceStatus> | null = null;
+
 /** RFC4122 v4 id：浏览器/Node20 原生支持，替代 uuid 依赖 */
 function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -83,16 +105,97 @@ function generateId(): string {
   });
 }
 
-let modeCache: DataSourceMode | null = null;
-
 export function resetModeCache(): void {
-  modeCache = null;
+  statusCache = null;
+  statusCacheAt = 0;
+  statusInFlight = null;
+}
+
+/**
+ * 解析数据源状态（带 30s 缓存 + 单飞去重）。
+ * 页面用它区分「没配 token / 配了但后端挂了 / 正常」，不再静默回退。
+ */
+export async function resolveDataSourceStatus(force = false): Promise<DataSourceStatus> {
+  // SSR：不访问 localStorage，返回 unconfigured
+  if (typeof window === 'undefined') {
+    return {
+      mode: 'unconfigured',
+      reason: 'checking',
+      baseUrl: '',
+      tokenConfigured: false,
+      health: null,
+    };
+  }
+
+  if (!force && statusCache && Date.now() - statusCacheAt < STATUS_CACHE_TTL_MS) {
+    return statusCache;
+  }
+
+  // 单飞：并发调用只发一次 fetch
+  if (statusInFlight && !force) return statusInFlight;
+
+  statusInFlight = doResolveStatus().finally(() => {
+    statusInFlight = null;
+  });
+  return statusInFlight;
+}
+
+async function doResolveStatus(): Promise<DataSourceStatus> {
+  const baseUrl = getApiBaseUrl();
+  const token = getApiToken();
+  const tokenConfigured = Boolean(token);
+
+  if (!tokenConfigured) {
+    const status: DataSourceStatus = {
+      mode: 'local',
+      reason: 'no_token',
+      baseUrl,
+      tokenConfigured: false,
+      health: null,
+    };
+    statusCache = status;
+    statusCacheAt = Date.now();
+    return status;
+  }
+
+  // 有 token：先返回 checking，再发健康检查
+  const checking: DataSourceStatus = {
+    mode: 'local',
+    reason: 'checking',
+    baseUrl,
+    tokenConfigured: true,
+    health: null,
+  };
+
+  try {
+    const health = await fetchSystemHealth();
+    const status: DataSourceStatus = {
+      mode: 'api',
+      reason: 'api_ok',
+      baseUrl,
+      tokenConfigured: true,
+      health,
+    };
+    statusCache = status;
+    statusCacheAt = Date.now();
+    return status;
+  } catch {
+    const status: DataSourceStatus = {
+      mode: 'degraded',
+      reason: 'health_failed',
+      baseUrl,
+      tokenConfigured: true,
+      health: null,
+    };
+    statusCache = status;
+    statusCacheAt = Date.now();
+    return status;
+  }
 }
 
 export async function resolveMode(force = false): Promise<DataSourceMode> {
-  if (modeCache !== null && !force) return modeCache;
-  modeCache = getApiToken() && (await checkHealth()) ? 'api' : 'local';
-  return modeCache;
+  const status = await resolveDataSourceStatus(force);
+  return status.mode === 'api' ? 'api' : 'local';
 }
 
 // ---------- 映射 ----------
@@ -139,6 +242,7 @@ export interface LibraryPageQuery {
   category?: string | null;
   author?: string | null;
   shelf?: ShelfFilter;
+  quality?: QualityFilter;
 }
 
 export interface LibraryPage {
@@ -248,6 +352,10 @@ export async function loadLibraryMeta(): Promise<LibraryMeta> {
 export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryPage> {
   const mode = await resolveMode();
 
+  if (mode === 'local' && query.quality) {
+    throw new Error('质量筛选需要连接后端服务');
+  }
+
   if (mode === 'local') {
     await initDB();
     const all = (await getBooks()).sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0));
@@ -284,6 +392,7 @@ export async function loadLibraryPage(query: LibraryPageQuery): Promise<LibraryP
   }
   if (query.search?.trim()) params.q = query.search.trim();
   if (query.author) params.author = query.author;
+  if (query.quality) params.quality = query.quality;
 
   const [docs, total] = await Promise.all([
     listDocuments(params),
