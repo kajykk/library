@@ -680,5 +680,11 @@
 - 现有前端 `src/lib/api/client.ts` 的 `request()` 已兼容 `detail` 为字符串或对象。
 - 新增响应字段一律追加，不删除/重命名旧字段。
 - `GET /api/documents` 不传 `sort/quality` 时行为与当前完全一致（`created_at.desc()`）。
-- `GET /api/search` 行为不变；语义检索走独立端点。
+- `GET /api/search` **在 R8a 改写了中文关键词通道的召回语义**（RD-H 授权，出处 [R8-chinese-search.md](R8-chinese-search.md) §3/§6）：
+  - 查询先切成词（`server/app/services/query_terms.py`）；**命中语义 = 任一关键词命中即返回**（旧实现把无空格整句当一个 FTS 短语 → 0 命中；含短词的查询走另一条 OR 路径，两条路径语义还不一致）。排序按「命中词数 → 字段优先级（title > author > description > 正文）→ bm25 → 更新时间」。
+  - 整词全部打空时，才对 ≥5 字长词的 4 字/3 字滑窗降级补位（`used_fallback`）。
+  - 响应字段不变（`id/title/type/snippet`），`snippet` 仍带 `<mark>` 且 ≤220 字；前端调用方式 `searchApi(q, type)` 未改。
+  - `limit` 现为 `1–100`（旧：`le=100` 但下界不设防，负数在 SQLite 等于「不限」）；越界仍是 422。
+  - `GET /api/search/summary` 与 `/search` **共用同一套词路由与降级条件**，因此同一 `q` 的 `total` 与 `hits` 口径一致；`total` 目前是精确计数（RD-J 未签，见 R8 任务书 §6）。
+  - 语义检索端点 `/api/search/semantic` 随 B5 的 NO-GO 决议不再启用，与本条无关。
 - `POST /api/annotations` 响应不变；复习行在服务端事务内创建，不改变响应体。

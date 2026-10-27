@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R7 全部完成并提交**（2026-10-27；R6 = `fef49c7`，R7 = `692ff1b`，B5 结论 **NO-GO**；均未推送） |
-| 当前任务 | 无（R7 四问已定：1 NO-GO / 2 不选型 / 3 不批准依赖 / 4 不做生成式 RAG） |
-| 最后更新 | 2026-10-27（R7 已提交） |
-| 阻塞项 | D4 OCR、D5 暗色范围、G4 推送授权；另有两项**等用户一句话**：是否删除 spike 盘（≈1.84 GB）、是否开工建议批次 R8（修 F-15 中文分词） |
-| 下一步 | B5-03~B5-12 依 NO-GO 结论**不得开工**；建议下一批 R8 只做 `/api/search` 的中文关键词通道（本轮实测它才是用户「搜不到/搜得慢」的真因） |
+| 当前批次 | **R8a · 中文关键词检索（已做完，等验收）**——报告 [reports/R8a-2026-10-27.md](reports/R8a-2026-10-27.md)，任务书 [R8-chinese-search.md](R8-chinese-search.md)；返工 R1–R7 已提交（R6 = `fef49c7`，R7 = `692ff1b`），**R8a 未提交**（RD-E/D6：验收后才 commit），G4 未授权故不推送；B5 结论 **NO-GO** |
+| 当前任务 | RW-801~RW-807 **全部 DONE**（`/api/search` 测试 0 → 30 例；`pytest` 248 → **306 passed**；bigram 测量报告 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md)）。停在验收 gate：§4 的 summary 行按 RD-J=B 判 **FAIL（感知延迟未改善）**，q10 类罕见 2 字词 **828–2,072 ms** 已点名 |
+| 最后更新 | 2026-10-27（R8a 交付 + RW-807 测量 + F-17 登记；真实库与 `server/data/` 全程零写入） |
+| 阻塞项 | D4 OCR、D5 暗色范围、G4 推送授权；**R8a 唯一待决 = RD-J**（`summary.total` 口径，A 要动前端一行文案）；**R8b 前置待决 = RD-K（英文子串 vs 词边界）+ RD-L（索引维护路径）+ F-17 是否同批**；spike 盘现测完（≈**4.4 GB**）等用户决定删除 |
+| 下一步 | 用户验收 R8a → commit（不推送）；RD-J 签核 → 若 A 则补 summary 那条线与一行前端文案；RD-K/RD-L 有答案后再提 G3；B5-03~B5-12 依 NO-GO 仍**不得开工** |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -166,8 +166,15 @@
 | 2026-10-26 | B2/B6 | 真实数据 (G1) | B6-cleanup 已按逐项授权执行（4 条日志）；后续每次写入仍需新授权 | 用户 | CLOSED（本轮）；未来需重新授权 |
 | 2026-10-27 | B5-02 | 决策 (D2/D3/RD-D) | spike 实测：索引耗时 2 h 15 min vs 20 min、内存外推 ≈661 MB vs 500 MB、hybrid P95 11/15 超 800 ms → 三条 FAIL。用户回复「你决定」，执行方按第 3 节原文规则定 **NO-GO**，四问记录见 [spikes/B5-02-decision.md](spikes/B5-02-decision.md) §5 | 用户→执行方 | **CLOSED（NO-GO）**；改判 go 需用户书面改写三条成本门槛 |
 | 2026-10-27 | B5-03 | 依赖 (G2) | `fastembed==0.9.1` + `onnxruntime==1.31.1`（31 包 / wheel ≈161 MB，余量仅 39 MB）——**不批准**：不写 `requirements-semantic.txt`、不进 CI/镜像；hnswlib 实测不需要 | 用户 | CLOSED（拒绝，功能不落地故无必要） |
-| 2026-10-27 | B5 收尾 | 磁盘 | `.spike-venv/`（175 MB）+ `server/scripts/spike-out/`（≈1.66 GB，含 1.33 GB 库副本与 332 MB 权重）是否删除 | 用户 | **OPEN（未确认前不删）**；永久证据已入库，删除不影响可复核性 |
-| 2026-10-27 | 建议 R8 | 新批次 | 修 `/api/search` 的中文关键词通道（F-15）：2 字词必然退化为四列全表 `LIKE`（694–1,312 ms）且 FTS 对 2 字词静默返回 0 行。R7 实测证明这才是用户「搜不到/搜得慢」的根因，属 B5 之外的独立缺陷，故本批只登记不动代码 | 用户 | **OPEN（等指令才开工）**；无新依赖、无迁移，预计只碰 `search.py` + 测试 |
+| 2026-10-27 | B5 收尾 | 磁盘 | `.spike-venv/`（175 MB）+ `server/scripts/spike-out/`（≈1.66 GB，含 1.33 GB 库副本与 332 MB 权重）是否删除 | 用户 | **待用户决定（R8 已测完）**：用户此前定「先留着，等 R8 测完再删」，RW-807 于 2026-10-27 完成 → 现清单为 `server/scripts/spike-out/` **4.2 GB**（新增 968 MB bigram/trigram 索引副本）+ `.spike-venv/` **≈175 MB**，合计 ≈**4.4 GB**，执行方未自行删除。本轮自建的临时大副本（`server/e2e-r8/ui.db` 1.33 GB、`size_probe.db` 326 MB、`wa*.db`、`mini.db`、`ui-data/`、`bigram-mini/`）属执行方自己的scratch，已清理，`e2e-r8/` 剩 **167 KB** 脚本与日志 |
+| 2026-10-27 | 建议 R8 | 新批次 | 修 `/api/search` 的中文关键词通道（F-15）。R7 实测证明这才是用户「搜不到/搜得慢」的根因 | 用户 | **CLOSED（已开工）**：用户 2026-10-27 定「分两批：先查询侧，再评估 bigram 索引」→ 任务书 [R8-chinese-search.md](R8-chinese-search.md) |
+| 2026-10-27 | R8a | 决策 (RD-G) | 整句中文查询语义是否从「精确短语（实测 11/11 打空）」改为「关键词 OR + 命中词数/bm25 排序」 | 用户 | **CLOSED = A**（用户 2026-10-27「开工」按 R7 先例采纳保守默认；契约已按此改写，见 api-contracts.md §11）。实测：15/15 非空、相关性 13/15 |
+| 2026-10-27 | R8a | 决策 (RD-H) | 是否授权改写 `api-contracts.md` 第 683 行「`GET /api/search` 行为不变」（B5 时代条款）并补写 R8 关键词契约 | 用户 | **CLOSED = 授权**：该行已替换为 6 条 R8a 契约（关键词 OR、滑窗补位、响应字段与 `<mark>`/220 字不变、`limit` 1–100、summary 共用路由、`total` 仍精确待 RD-J） |
+| 2026-10-27 | R8a | 决策 (RD-I) | 短词（<3 字）是否继续搜正文。实测「弗洛伊德 文明 本能」全列命中 521 本、只扫元数据仅 17 本 → 「短词不搜正文」不是可行降级 | 用户 | **CLOSED = A（继续搜正文）**：常见短词 13–36 ms，罕见短词（起卦/断卦）仍 828–2,072 ms，这部分由 R8b 解决 |
+| 2026-10-27 | R8a | 决策 (**RD-J**，新) | `/search/summary` 的 `total`：A = 候选集内计数 + `total_capped`（10–90 ms，需把 `src/app/search/page.tsx:250` 的「共」改成「约」）；B = 保持精确 COUNT | 用户 | **OPEN（本轮按 B 实现）**：实测 summary 中位 **315.0 ms**、最大 645.8 ms = `/search` 的 **5.8×** → §4 的 summary 线 FAIL，前端 `Promise.all` 下**用户感知延迟不变**。选 A 才能过线，A 动前端一行，所以没替用户决定 |
+| 2026-10-27 | R8b | 决策 (**RD-K**，新) | bigram 用 `unicode61` 后英文从**子串匹配**变**词边界匹配**：`hard` 命中 599 → 328 篇（差集里 52 篇是 Richard、另有 Hardy/Hardt）。A = 接受词边界（磁盘 −199 MiB）；B = 保留 trigram 兜英文（磁盘 1.35×）；C = 英文也换 bigram 但前端补一个「包含匹配」开关 | 用户 | **OPEN**：13 条中文查询的召回集合与现状逐条相等，只有 q13/q14 两条英文查询受影响（−179 / −102 篇）。数据见 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md) §6.3 |
+| 2026-10-27 | R8b | 决策 (**RD-L**，新) | bigram 索引的维护路径。硬约束：本机与 `server/.venv` 都是 **SQLite 3.42.0**，`contentless_delete=1` 不支持、contentless 表不能 `DELETE` | 用户 | **OPEN**：实测三选一——(a) 应用侧维护 + 普通 fts5 表（单行 20 万字 ≈**64 ms**，体积 755.6 MiB，且能索引到 NUL 之后的文本）；(b) contentless + 每次全库重建（255.3 MiB，74.9 s/次）；(c) 升 SQLite（新依赖，超出 R8b「不装依赖」范围）。SQL 触发器方案已排除：递归 CTE 展开单行 **0.8–2,455.8 ms**，且 `length()` 在 NUL 截断 → 复刻 F-17 盲区 |
+| 2026-10-27 | R8b | 迁移 (G3) | bigram（2 字 n-gram）FTS 索引需新迁移 `0011_bigram_fts` + 全库重建 | 用户 | **OPEN（未申请）**：数字已齐（重建 **74.9 s**、展开占 24.5 s；磁盘 **−199 MiB** 替换口径 或 **+755.6 MiB** 并存口径；回滚 = drop 表 + 撤应用侧写入口，`documents` 零改动）；但 RD-K、RD-L、F-17 三条未决 → 本批不提交申请 |
 | 2026-10-26 | B2/B6 | 技术 | 扫描版 PDF 是否装 tesseract（D4） | 用户 | OPEN（维持不装） |
 | 2026-10-26 | B3 | 范围 | 暗色模式覆盖范围（D5） | 用户 | OPEN |
 | 2026-10-26 | 全部 | 推送 (G4) | 每批单独提交；推送需逐次确认 | 用户 | OPEN |
@@ -187,8 +194,10 @@
 | 2026-10-27 | 清理脚本 | 真实数据变更由未入库代码完成，无法复现 | 证据链断裂 | **RD-04 → RW-201** | FIXED（`server/scripts/reextract_content.py`、`auto_classify.py`，见 REWORK §7.4） |
 | 2026-10-27 | [progress.md](progress.md) | 70 行任务表被批次汇总覆盖 | 无法回答「还差哪些任务」 | **RD-19 → RW-202** | FIXED（本文件） |
 | 2026-10-27 | `documents.content` | 1 本 PDF 的 content 是 UTF-16LE 残留（首字符 NUL），SQLite 长度 0、Python 视为非空 | 质量口径与 `reindex_job` 差 1 本 | REWORK F-8 | 已在 reextract 脚本内按质量口径处理；`reindex_job` 口径未纳入 R6，仍待排期 |
-| 2026-10-27 | [server/app/routers/search.py:192-197](../../server/app/routers/search.py#L192-L197) | 查询含任一 <3 字词时整条退化为 `_search_ilike` 四列全表扫描；实测关键词通道 694–1,312 ms，而 2 字词强制走 FTS 会静默返回 0 行 | 中文搜索又慢又漏；B5 hybrid 延迟 FAIL 的唯一成因 | **REWORK F-15** | OPEN → **建议作为 R8 主任务**（B5 已 NO-GO，但这条与嵌入无关，是现有 `/api/search` 自身的缺陷：慢 + 静默漏配；R7 只登记未动代码） |
+| 2026-10-27 | [server/app/routers/search.py:192-197](../../server/app/routers/search.py#L192-L197) | 查询含任一 <3 字词时整条退化为 `_search_ilike` 四列全表扫描；实测关键词通道 694–1,312 ms，而 2 字词强制走 FTS 会静默返回 0 行 | 中文搜索又慢又漏；B5 hybrid 延迟 FAIL 的唯一成因 | **REWORK F-15** | **R8a 已交付查询侧（未提交）**：① 整句打空 → 关键词 OR，15/15 非空、相关性 13/15；② `ORDER BY CASE` 取消提前终止 → 短词单条无 `ORDER BY` 扫描，常见词 13–36 ms、端点中位 54.1 ms；③ CJK 不再套 `lower()`；④ 两路语义统一（同一 `q` 下 `summary.total ≥ len(hits)` 且 `sum(by_type)=total`，测试锁定）。**仍未解决的一条**：罕见 2 字词结构上必须扫完正文 → q10 **828.8 ms（进程内）/ 2,072 ms（HTTP 冷跑）**，已点名，归 R8b bigram（测量完成，见 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md)：2 字词 P95 全部 ≤1.53 ms） |
+| 2026-10-27 | [server/app/routers/search.py](../../server/app/routers/search.py) | `/api/search` 与 `/api/search/summary` **功能测试 0 条**（全仓仅 `test_rate_limit.py:163` 引用过路径字符串） | 三个真实缺陷能长期存在正是因为无覆盖；与 R1 时 RD-01「没有一条测试命中该端点」同型 | R8a **RW-806** | **CLOSED**：`tests/test_search_api.py` **30 例全绿**（≥14 达标），跑在 R8a 之前的 `search.py` 上是 **12 红 / 18 绿**，逐条标注 `[红→绿]/[回归锁定]/[新约束]`；`server/.venv` 全量 `pytest tests -q` = **306 passed**（前 248） |
 | 2026-10-27 | [server/app/services/content_extract.py:21](../../server/app/services/content_extract.py#L21) + 切片 `MAX_CHUNKS=200` | 入库正文上限 200,000 字符，切片只覆盖前 ≈136,120 字符 | 全库 633/1,060 本（59.7%）尾部 ≈32% 内容永远进不了任何索引 | **REWORK F-16** | OPEN（B5 判 NO-GO 后，`MAX_CHUNKS=200` 那一半不再有消费方；`MAX_CHARS=200_000` 的入库截断仍是既成事实——633/1,060 本长书的尾部 ≈32% 内容既进不了语义索引，也没有别的读取方，除非将来做全文/摘要。降低优先，不排期；若重开 B5 需与门槛改写一并决定） |
+| 2026-10-27 | `documents.title/author/description/content`（库副本全库普查） | **11/1,283 篇（0.86%）正文含 NUL 字节**：SQLite 的 `length()` 在 NUL 处截断（`rowid=3` 报 3、真实 50,860），**`LIKE` 对 NUL 之后的内容静默不匹配**，FTS5 trigram 同样盲（与 LIKE 命中集合逐行相同），而 `instr()` 与驱动侧 Python 读到全文 | `/api/search` 的两条通道与 RD-J 的精确计数对这 11 篇都漏；15 条探针查询里 **10 条**在 NUL 之后仍有命中词；bigram（应用侧维护）实测能看见（`rowid` 2/536/1302 全召回）→ 是 R8b 顺带能修、但根因在入库 | **REWORK F-17**（F-8 的扩展：F-8 只记了《很杂很杂的杂学知识》那 1 本 = 本处 `rowid=229`） | OPEN（按规则只登记不顺手修；建议入库前剥 NUL + 对这 11 篇重跑写入，属真实库写入需 G1 逐次授权）。证据：`docs/roadmap/spikes/R8-bigram-measure.md` §8 |
 
 ## 批次切换记录
 
@@ -202,6 +211,8 @@
 | 2026-10-27 | R5（最小集） | R5 收尾（RW-504/505） | 用户（「补 504/505 最小版（推荐）」） | RD-B 定为最小版；RW-504/505 已完成并提交 `65d98d5`（G4 前不推送） |
 | 2026-10-27 | R6 | R7（RW-701 B5 重评） | 用户（「继续」，RD-D 默认「重评」） | R6 提交 `fef49c7` + 文档标记 `da2d5d3`；R7 只跑 spike（隔离 venv + 库副本只读），**产品代码零改动** |
 | 2026-10-27 | R7（签核） | 下一批（未定） | 用户（「你决定」→ 四问由执行方按第 3 节原文规则定） | **B5 判 NO-GO**，B5-03~B5-12 保持 SKIPPED；依赖 G2 拒绝、生成式 RAG 不做；R7 已提交 `692ff1b`（G4 前不推送）。待用户指令的两件事：是否开工 **R8＝修 F-15 中文关键词通道**、是否删除 spike 盘（≈1.84 GB） |
+| 2026-10-27 | R7 | **R8a（中文关键词检索·查询侧）** | 用户（「启动」+ 选择「分两批：先查询侧，再评估 bigram 索引（推荐）」；spike 盘「先留着，等 R8 测完再删」） | 本轮为 **docs-only**：新增任务书 [R8-chinese-search.md](R8-chinese-search.md)（RW-801~807 + 门槛表 + RD-G/H/I），产品代码零改动。两轮只读探针（库副本 `mode=ro&immutable=1`）产出 §1 的 E1–E13；R8b 需 G3，**未申请、未开工** |
+| 2026-10-27 | R8a（任务书） | R8a（执行，**待签核**） | 用户（「开工」→ 按 R7 先例采纳任务书保守默认 RD-G=A / RD-H=授权 / RD-I=A；RD-J 留给用户） | RW-801~807 全 DONE。`search.py` 重写 + 新增 `query_terms.py`；15 条查询 15/15 非空（基线 11 条打空），`/search` 进程内中位 **54.1 ms**；`pytest tests -q` **306 passed**（R8a 前 248）。**门槛有一条未达**（summary 中位 315.0 ms = 5.8×，因 RD-J 按 B 实现）+ 罕见短词 q10 仍 828.8 ms。**未提交**（RD-E/D6：等用户确认），**未推送**（G4 未授权）。报告 [reports/R8a-2026-10-27.md](reports/R8a-2026-10-27.md) |
 
 ## 任务书偏离记录
 
@@ -217,3 +228,7 @@
 | 2026-10-27 | B5-01 | 切片样本 20 本 | 50 本（epub 28 / pdf 16 / txt 6） | 增强代表性；未降低任何门槛 | 否（无害偏离，报告 §2 已记） |
 | 2026-10-27 | B5-01 | 第 5 项「暴力检索 >800 ms 才测 hnswlib」 | 未安装 hnswlib | 实测语义暴力点积全库外推 53–70 ms，触发条件不成立；hybrid 超标另有成因（F-15） | 否 |
 | 2026-10-27 | B5-01 | CI 门槛「pytest / build / docker 全绿」 | 本轮只重跑 pytest（248 passed, 2 warnings, 21.32s） | spike 零产品代码改动，`npm run build`/`docker build` 沿用 R6（`fef49c7`）的绿状态；已在报告 §9 注明未重跑 | 否 |
+| 2026-10-27 | RW-804 | §4 的 summary 延迟门槛 | 明知按 RD-J=B 会 FAIL（中位 315.0 ms）仍按 B 实现，未擅自改 A | A 需要动 `src/app/search/page.tsx:250` 一行文案，而 §2 规定不碰 `src/**`；不替用户决定开放项 | 是（RD-J 已列 OPEN，改判 A 即过线） |
+| 2026-10-27 | RW-807 | 探针表名按任务书 `documents_fts2` | 实际建表 `documents_bigram_fts` | 与生产 shadow 表 `documents_fts` 同前缀易混，且 R8b 未开 G3，正式名字留给迁移时定；形状/查询语义与任务书一致 | 否（无害偏离，[spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md) §2 已记） |
+| 2026-10-27 | RW-807 | 体积以 contentless（只存倒排）为主口径 | 补 `--contentless 0` 分支，改以**可维护的普通 fts5 表 755.6 MiB** 为主数，contentless 255.3 MiB 只作对比 | 本机与 `server/.venv` 都是 SQLite 3.42.0：contentless 表不能 `DELETE`、`contentless_delete=1` 直接报 unrecognized option → 任务书预设的形状不可逐行维护，报 255.3 MiB 会低估 | 否（正是 RD-L 要用户选的岔口） |
+| 2026-10-27 | R8a 验收 | 沿用 R5 的浏览器实测环节 | 未开浏览器；改在 **uvicorn `:8123` + 库副本**上跑真实 HTTP（15/15 非空、响应字段与 `<mark>`/220 字、`limit` 422、429 节流） | 用户进程占着 `:3000`/`:8000` 且约定不重启；本批 `src/**` 零改动，前端渲染路径与 R5 相同 | 是（报告「风险与回滚」明写浏览器未复验，签核时可要求补） |

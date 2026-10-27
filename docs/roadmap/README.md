@@ -115,8 +115,10 @@
 | [B4-reading-review.md](B4-reading-review.md) | 批次 4 任务书 |
 | [B5-semantic-search.md](B5-semantic-search.md) | 批次 5 任务书（含 go/no-go 硬门槛） |
 | [B6-closeout.md](B6-closeout.md) | 批次 6 任务书 |
-| `spikes/` | B5-01 spike 报告、B5-01 人工判定明细、B5-02 决策签核页（`B5-02-gonogo.md` 已作废，仅留历史） |
-| `reports/`（待创建） | 每批完成报告，模板见 [00-execution-rules.md](00-execution-rules.md) 第 6 节 |
+| [REWORK-2026-10-27.md](REWORK-2026-10-27.md) | 返工批次 R1–R7 任务书与执行记录（R1–R7 已提交，B5 判 NO-GO） |
+| [R8-chinese-search.md](R8-chinese-search.md) | R8 任务书：修 F-15 中文关键词通道。R8a＝查询侧零门禁（RW-801~806），R8b＝bigram 索引需 G3（RW-807 只测量不申请） |
+| `spikes/` | B5-01 spike 报告、B5-01 人工判定明细、B5-02 决策签核页（`B5-02-gonogo.md` 已作废，仅留历史）；[R8-bigram-measure.md](spikes/R8-bigram-measure.md) = RW-807 bigram 索引五项测量（只测量，未申请 G3） |
+| `reports/` | 每批完成报告（`B0`/`B1`/`B2-B6`/`B6-cleanup`/[R8a-2026-10-27.md](reports/R8a-2026-10-27.md)），模板见 [00-execution-rules.md](00-execution-rules.md) 第 6 节。R1–R7 的批次记录写在 [REWORK-2026-10-27.md](REWORK-2026-10-27.md) 与 [progress.md](progress.md)，未另出报告 |
 
 ## 7. 每批完成定义
 
