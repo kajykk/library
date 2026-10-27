@@ -28,13 +28,13 @@ def sm2_lite(
     repetitions: int,
     lapses: int,
     rating: int,  # 1=重来 2=困难 3=一般 4=简单
+    now: datetime,
 ) -> tuple[int, float, int, int, datetime]:
     """计算下一次复习参数。
 
     返回 (interval_days, ease, repetitions, lapses, due_at)。
+    `now` 由调用方注入，保证与落库时间、预览基准一致。
     """
-    now = datetime.now(timezone.utc)
-
     if rating < 2:
         # 重来
         return 0, max(1.3, ease - 0.2), 0, lapses + 1, now + timedelta(minutes=10)

@@ -494,14 +494,15 @@ def rate_review(
     review = ensure_review_row(db, annotation)
     if review is None:
         raise HTTPException(status_code=400, detail="书签或已删除文档的标注不参与复习")
+    now = utcnow()
     interval, ease, repetitions, lapses, due = sm2_lite(
         interval_days=review.interval_days,
         ease=review.ease,
         repetitions=review.repetitions,
         lapses=review.lapses,
         rating=RATING_VALUES[req.rating],
+        now=now,
     )
-    now = utcnow()
     review.interval_days = interval
     review.ease = ease
     review.repetitions = repetitions

@@ -167,3 +167,27 @@ def test_policy_for_classifies_paths_and_methods():
     assert _policy_for(_request("/api/documents", method="POST")) == WRITE_POLICY
     assert _policy_for(_request("/api/documents/upload", method="POST")) == (50, 60)
     assert _policy_for(_request("/api/clip", method="POST")) == (10, 60)
+
+
+# CPU 密集端点：契约第 10 节要求 2/60s
+STRICT_HEAVY_PATHS = (
+    ("/api/quality/audit", "POST"),
+    ("/api/imports/scan", "GET"),
+    ("/api/imports/execute", "POST"),
+    ("/api/documents/reextract", "POST"),
+)
+
+
+@pytest.mark.parametrize("path,method", STRICT_HEAVY_PATHS)
+def test_policy_for_cpu_heavy_paths_is_2_per_minute(path, method):
+    assert _policy_for(_request(path, method=method)) == (2, 60)
+
+
+@pytest.mark.parametrize("path,method", STRICT_HEAVY_PATHS)
+def test_middleware_limits_cpu_heavy_paths(_clean, path, method):
+    """第三次请求必须 429；即使 GET /imports/scan 也不能落到宽松的读策略。"""
+    assert _dispatch(path, method=method).status_code == 200
+    assert _dispatch(path, method=method).status_code == 200
+    resp = _dispatch(path, method=method)
+    assert resp.status_code == 429
+    assert resp.headers["retry-after"] == "60"

@@ -48,7 +48,7 @@ def ensure_review_row(db: Session, annotation: Annotation) -> AnnotationReview |
 
 
 def format_interval(delta: timedelta) -> str:
-    minutes = int(round(delta.total_seconds() / 60))
+    minutes = round(delta.total_seconds() / 60)
     if minutes < 24 * 60:
         return f"{max(1, minutes)} 分钟"
     return f"{max(1, round(minutes / (24 * 60)))} 天"
@@ -72,6 +72,7 @@ def preview_from_state(
             repetitions=repetitions,
             lapses=lapses,
             rating=value,
+            now=base,
         )
         preview[name] = format_interval(due - base)
     return preview

@@ -3,8 +3,9 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import or_, cast, String as SAString
+from sqlalchemy import or_
 
+from ...config import get_settings
 from ...models import Document, DocumentQuality, DocumentTag, Tag
 from ...services.sql_utils import (
     escape_like,
@@ -12,7 +13,6 @@ from ...services.sql_utils import (
     normalize_language_code,
     trimmed_content_length_expr,
 )
-from ...config import get_settings
 
 # quality 筛选值（合法集合）
 QUALITY_FILTERS = frozenset({

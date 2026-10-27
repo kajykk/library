@@ -26,10 +26,15 @@ _HEAVY_PATH_PREFIXES = (
     "/api/documents/reindex-content",
 )
 
-# 需要比普通写更严格的写入路径
+# 需要比普通写更严格的具体路径（契约第 10 节）
 _STRICT_PATH_POLICIES: dict[str, tuple[int, int]] = {
     "/api/documents/upload": (50, 60),
     "/api/clip": (10, 60),
+    # CPU 密集：审计、扫描、导入执行、正文重抽取
+    "/api/quality/audit": (2, 60),
+    "/api/imports/scan": (2, 60),
+    "/api/imports/execute": (2, 60),
+    "/api/documents/reextract": (2, 60),
 }
 
 

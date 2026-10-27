@@ -12,13 +12,21 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R5 完成并提交**（2026-10-27；R5 收尾提交 `65d98d5`） |
-| 当前任务 | R6（测试/限流）→ R7（B5 重评） |
-| 最后更新 | 2026-10-27（RW-504/505 已提交；提交后状态更新） |
+| 当前批次 | **返工 R1–R6 完成，R6 待验收提交**（2026-10-27） |
+| 当前任务 | R7（B5 重评，需 RD-D） |
+| 最后更新 | 2026-10-27（R6：RW-601/602 完成，全量回归通过） |
 | 阻塞项 | RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围、G4 推送授权 |
-| 下一步 | 用户指示是否进入 R6；推送仍需 G4 单独授权 |
+| 下一步 | 等用户验收 R6 后提交；之后按 RD-D 决定是否进入 R7；推送仍需 G4 单独授权 |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
+
+### 返工 R6 结果（2026-10-27，详见 REWORK §7.10）
+
+| 任务 | 结果 |
+|---|---|
+| RW-601 | 后端 204→**248 passed**（+44）、前端 143→**154 passed**（+11）；新增 27 例后端连跑 3 次稳定；`tsc`/`eslint`/`build` 全绿 |
+| RW-602 | 四条 CPU 密集路径 2/60s；`sm2_lite(now=…)` 注入；`filters.py` 未用导入清零；红线 8+9 例→全绿 |
+| 未含 | F-5/F-8/F-9/F-11 仍在发现区；新增 F-13（无 ruff 配置/门禁）、F-14（reextract worker 无 pytest 固化） |
 
 ### 数据清理执行结果（2026-10-27，详见 [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)）
 
@@ -94,21 +102,21 @@
 | B3-09 | 无限滚动 + 虚拟化 + 预取 | PARTIAL | 无限滚动已有；虚拟化仅笔记页（`@tanstack/react-virtual`），书架未接；按 RD-B 最小版不做书架全量虚拟化（REWORK §7.9） |
 | B3-10 | 骨架屏/空态/错误态 | DONE | [library/page.tsx:818](../../src/app/library/page.tsx#L818) 骨架；[:847-861](../../src/app/library/page.tsx#L847-L861) 空态 |
 | B3-11 | 移动端抽屉/导航、暗色、无障碍 | PARTIAL | **导航入口与窄屏图标态已由 RW-501 补齐**（`aria-label/title`，REWORK §7.8）；抽屉、暗色范围（D5）仍缺 |
-| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；R5 新增 Nav/coverCache/datetime/queueReviewApi/dataSourceAutoAdd 单测；仍无 BookCard/书架组件测试与 B3 报告；**RW-601** |
+| B3-12 | 组件测试、Playwright、性能记录、B3 报告 | PARTIAL | `e2e/smoke.spec.ts`、`features.spec.ts` 存在；R5 新增 Nav/coverCache/datetime/queueReviewApi/dataSourceAutoAdd 单测；RW-601 再补 [useLibraryFilters.test.tsx](../../src/lib/__tests__/useLibraryFilters.test.tsx) 7 例 + 队列页组件 4 例；仍无 BookCard/书架组件测试与 B3 报告 |
 
 ## B4 · 阅读队列 + 间隔复习 — PARTIAL（6/9）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
 | B4-01 | 迁移 `0010_reading_queue_reviews` + 模型 + 回填 | DONE | 迁移头 `0010`；[models.py:206-239](../../server/app/models.py#L206-L239) |
-| B4-02 | `review_scheduler.py` SM-2 lite 纯函数 | DONE | [review_scheduler.py](../../server/app/services/review_scheduler.py)；`now` 注入问题见 **RD-18 → RW-602** |
+| B4-02 | `review_scheduler.py` SM-2 lite 纯函数 | DONE | [review_scheduler.py](../../server/app/services/review_scheduler.py)；`now` 已改为调用方注入（RW-602），9 例覆盖四档间隔与预览文案 |
 | B4-03 | 阅读队列 API（增删改/重排/幂等） | DONE | [review.py:180-379](../../server/app/routers/review.py#L180-L379)：`/reading-queue`、auto-add/next、`ordered_ids`（REWORK §7.6） |
 | B4-04 | 复习 API（due/rating/snooze/stats） | DONE | [review.py:384-607](../../server/app/routers/review.py#L384-L607)：四档评分、highlight/note 过滤、`preview`、5 字段 stats（REWORK §7.6） |
 | B4-05 | 标注创建时建 review 行 | DONE | [review_service.py:19](../../server/app/services/review_service.py#L19) `ensure_review_row`（highlight/note、存活文档、幂等）+ [annotations.py:104](../../server/app/routers/annotations.py#L104) 创建后挂钩，失败只回滚复习行；后端 9 例（REWORK §7.9） |
 | B4-06 | 队列页/回顾页 Tab + 队列排序 UI | PARTIAL | [queue/page.tsx:60](../../src/app/queue/page.tsx#L60) 两 Tab + 上移/下移/状态动作已完成（同优先级内，F-12）；拖拽排序未做 |
 | B4-07 | 复习卡评分、快捷键、间隔预览 | DONE | [queue/page.tsx:464](../../src/app/queue/page.tsx#L464) ReviewTab：两步揭示、四档评分用服务端 `preview`、1–4/S/←/→/Esc、乐观隐藏与回滚（REWORK §7.9） |
 | B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | **前两项已完成（RW-502）**：[datetime.ts](../../src/lib/datetime.ts) + `since` 服务端过滤（REWORK §7.8）；`buildDailyNoteContent` 仍只有两参，「今日复习」段未接入（B4-08 剩余项，未纳入返工清单） |
-| B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py`、`test_annotation_review_hook.py` 等存在；前端 [queueReviewApi.test.ts](../../src/lib/__tests__/queueReviewApi.test.ts) 13 例 + [dataSourceAutoAdd.test.ts](../../src/lib/__tests__/dataSourceAutoAdd.test.ts) 6 例，但队列/复习页面组件测试仍缺；**RW-601** |
+| B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py`、`test_annotation_review_hook.py`、RW-601 新增 `test_review_scheduler.py` 9 例 + `test_reading_queue_api.py` 7 例 + `test_reviews_api.py` 5 例；前端 [queueReviewApi.test.ts](../../src/lib/__tests__/queueReviewApi.test.ts) 13 例 + [dataSourceAutoAdd.test.ts](../../src/lib/__tests__/dataSourceAutoAdd.test.ts) 6 例 + [队列页组件测试](../../src/app/queue/__tests__/page.test.tsx) 4 例；B4 报告仍缺 |
 
 ## B5 · 语义检索 / RAG — NO-GO（1/12 + 10 SKIPPED）
 
@@ -166,7 +174,7 @@
 | 2026-10-26 | 仓库根目录 | `dev-server.log`、`library_e2e*.log` 等运行产物 | 噪音/磁盘占用 | 清理需单独授权 | OPEN |
 | 2026-10-27 | 清理脚本 | 真实数据变更由未入库代码完成，无法复现 | 证据链断裂 | **RD-04 → RW-201** | FIXED（`server/scripts/reextract_content.py`、`auto_classify.py`，见 REWORK §7.4） |
 | 2026-10-27 | [progress.md](progress.md) | 70 行任务表被批次汇总覆盖 | 无法回答「还差哪些任务」 | **RD-19 → RW-202** | FIXED（本文件） |
-| 2026-10-27 | `documents.content` | 1 本 PDF 的 content 是 UTF-16LE 残留（首字符 NUL），SQLite 长度 0、Python 视为非空 | 质量口径与 `reindex_job` 差 1 本 | REWORK F-8 | 已在 reextract 脚本内按质量口径处理；`reindex_job` 待 R6 评估 |
+| 2026-10-27 | `documents.content` | 1 本 PDF 的 content 是 UTF-16LE 残留（首字符 NUL），SQLite 长度 0、Python 视为非空 | 质量口径与 `reindex_job` 差 1 本 | REWORK F-8 | 已在 reextract 脚本内按质量口径处理；`reindex_job` 口径未纳入 R6，仍待排期 |
 
 ## 批次切换记录
 
