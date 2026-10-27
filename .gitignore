@@ -42,6 +42,8 @@ server/data/
 server/backups/
 server/e2e-*/
 .venv/
+.spike-venv/
+server/scripts/spike-out/
 
 # 一次性分类/修复脚本
 server/apply_remaining.py

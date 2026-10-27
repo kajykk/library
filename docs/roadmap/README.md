@@ -91,8 +91,8 @@
 | ID | 决策 | 影响批次 | 默认建议 | 状态 |
 |---|---|---|---|---|
 | D1 | 是否允许 B2 在真实库执行导入/软删除/重提取 | B2 | 每一步单独预览 + 授权 | OPEN |
-| D2 | 是否允许 B5 新增本地嵌入依赖（fastembed / onnxruntime 等） | B5 | **先 spike（不需要授权，装在隔离 venv）**，按 B5-02 结论再单独批准 | OPEN |
-| D3 | B5 语义检索 go/no-go 门槛 | B5 | 门槛已写在 B5 任务书第 3 节（相关性 / 体积 / 耗时 / 内存 / 离线 / CI 六项），执行方只报告实测值，不自行放宽 | OPEN |
+| D2 | 是否允许 B5 新增本地嵌入依赖（fastembed / onnxruntime 等） | B5 | spike 已在隔离 venv 做完（未污染 `server/.venv`）：新增 wheel ≈161 MB、权重 90.8 / 240.5 MB，两项达标；hnswlib 实测不需要。**结论：不批准**——功能既不落地就不承担 31 包 / ≈161 MB 的供应链与镜像体积面；`server/requirements-semantic.txt` 未创建 | CLOSED（2026-10-27 不批准，[签核](spikes/B5-02-decision.md) 决策 3） |
+| D3 | B5 语义检索 go/no-go 门槛 | B5 | 门槛未放宽，实测：相关性 PASS（bge 12/15、multi 14/15，hybrid 15/15）、体积 PASS、CI PASS、隐私 PASS；**索引耗时 FAIL（全库外推 2 h 15 min / 1 h 24 min，线 20 min）、hybrid P95 FAIL（11/15 超 800 ms，成因是现有 2 字词退化全表 LIKE）、常驻内存 FAIL（外推 ≈661 / ≈824 MB，线 500 MB）**。按「任一项不达标即 no-go」→ **NO-GO**，B5-03~B5-12 保持 SKIPPED；数据见 [spikes/B5-01-embedding-spike.md](spikes/B5-01-embedding-spike.md)，四问逐项记录见 [spikes/B5-02-decision.md](spikes/B5-02-decision.md) §5 | CLOSED（2026-10-27 NO-GO；改判 go 需书面改写三条成本门槛 + 先修 F-15） |
 | D4 | 扫描版 PDF 是否安装 OCR（tesseract） | B2/B6 | 先标注"需 OCR"，不自动安装 | OPEN |
 | D5 | 暗色模式覆盖范围 | B3 | 书架/质量/导入/回顾/设置优先；reader/notes/graph 最小适配 | OPEN |
 | D6 | 每批完成后是否直接提交/推送 | 全部 | 每批停下验收；单独提交；推送需确认（G4） | OPEN |
@@ -115,7 +115,7 @@
 | [B4-reading-review.md](B4-reading-review.md) | 批次 4 任务书 |
 | [B5-semantic-search.md](B5-semantic-search.md) | 批次 5 任务书（含 go/no-go 硬门槛） |
 | [B6-closeout.md](B6-closeout.md) | 批次 6 任务书 |
-| `spikes/`（待创建） | B5-01 spike 报告与 B5-02 go/no-go 决策页 |
+| `spikes/` | B5-01 spike 报告、B5-01 人工判定明细、B5-02 决策签核页（`B5-02-gonogo.md` 已作废，仅留历史） |
 | `reports/`（待创建） | 每批完成报告，模板见 [00-execution-rules.md](00-execution-rules.md) 第 6 节 |
 
 ## 7. 每批完成定义

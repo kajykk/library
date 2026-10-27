@@ -12,13 +12,23 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **返工 R1–R6 完成并提交**（2026-10-27；R6 提交 `fef49c7`） |
-| 当前任务 | R7（B5 重评，需 RD-D） |
-| 最后更新 | 2026-10-27（R6 已提交） |
-| 阻塞项 | RD-D（R7 B5 重评）、D4 OCR、D5 暗色范围、G4 推送授权 |
-| 下一步 | 进入 R7（按 RD-D 默认「重评」）；推送仍需 G4 单独授权 |
+| 当前批次 | **返工 R7（B5 重评）已完成并签核收口：结论 NO-GO**（2026-10-27；R1–R6 已提交，R6 = `fef49c7`；R7 按「回复即提交」的既定口径单独提交，未推送） |
+| 当前任务 | 无（R7 四问已定：1 NO-GO / 2 不选型 / 3 不批准依赖 / 4 不做生成式 RAG） |
+| 最后更新 | 2026-10-27（RW-701 报告出稿 + B5-02 签核落笔） |
+| 阻塞项 | D4 OCR、D5 暗色范围、G4 推送授权；另有两项**等用户一句话**：是否删除 spike 盘（≈1.84 GB）、是否开工建议批次 R8（修 F-15 中文分词） |
+| 下一步 | B5-03~B5-12 依 NO-GO 结论**不得开工**；建议下一批 R8 只做 `/api/search` 的中文关键词通道（本轮实测它才是用户「搜不到/搜得慢」的真因） |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
+
+### 返工 R7 结果（2026-10-27，详见 REWORK §7.11 与 [spikes/B5-01-embedding-spike.md](spikes/B5-01-embedding-spike.md)）
+
+| 项 | 结果 |
+|---|---|
+| 门槛对照 | 相关性 / 体积 / CI / 隐私 **PASS**；索引耗时 / hybrid P95 / 常驻内存 **FAIL** → 按「任一项不达标即 no-go」判 **NO-GO** |
+| 四问签核 | 用户回复「你决定」→ 执行方按原文规则定：1 NO-GO、2 不选型（倾向 bge 记录在案）、3 不批准 `fastembed`/`onnxruntime`、4 不做生成式 RAG（[B5-02-decision.md](spikes/B5-02-decision.md) §5） |
+| 产品代码 | **零改动**：无迁移 `0011`、无 `requirements-semantic.txt`、`server/.venv` 未装任何 B5 依赖、真实库与 `server/data/` 零写入 |
+| 唯一实测收益 | 定位到用户可感知的搜索问题根因＝[search.py:192-197](../../server/app/routers/search.py#L192-L197) 的 2 字词必然退化为四列全表 `LIKE`（关键词通道 694–1,312 ms，且 FTS 对 2 字词静默返回 0 行）；语义向量本身 P95 ≤8.81 ms 完全达标 → F-15 |
+| 盘 | `.spike-venv/` 175 MB + `spike-out/` ≈1.66 GB 暂保留，等用户确认再删；永久证据已入库（报告 + 决策页 + `B5-01-judgments.json` + `spike_semantic.py`） |
 
 ### 返工 R6 结果（2026-10-27，详见 REWORK §7.10）
 
@@ -118,22 +128,22 @@
 | B4-08 | 时区工具、修「仅今天」、每日笔记接入 | PARTIAL | **前两项已完成（RW-502）**：[datetime.ts](../../src/lib/datetime.ts) + `since` 服务端过滤（REWORK §7.8）；`buildDailyNoteContent` 仍只有两参，「今日复习」段未接入（B4-08 剩余项，未纳入返工清单） |
 | B4-09 | 调度/API/前端测试、B4 报告 | PARTIAL | 后端 `test_review_fixes.py`、`test_annotation_review_hook.py`、RW-601 新增 `test_review_scheduler.py` 9 例 + `test_reading_queue_api.py` 7 例 + `test_reviews_api.py` 5 例；前端 [queueReviewApi.test.ts](../../src/lib/__tests__/queueReviewApi.test.ts) 13 例 + [dataSourceAutoAdd.test.ts](../../src/lib/__tests__/dataSourceAutoAdd.test.ts) 6 例 + [队列页组件测试](../../src/app/queue/__tests__/page.test.tsx) 4 例；B4 报告仍缺 |
 
-## B5 · 语义检索 / RAG — NO-GO（1/12 + 10 SKIPPED）
+## B5 · 语义检索 / RAG — **NO-GO**（RW-701 重评已签核收口，2026-10-27；B5-01/02 完成，B5-03~B5-12 SKIPPED）
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B5-01 | 技术 spike：模型/向量存储/真实库基准 | PARTIAL | [spikes/B5-02-gonogo.md](spikes/B5-02-gonogo.md) 只有结论，无实测数据与 `spike_semantic.py`；**RD-20 → RW-701** |
-| B5-02 | 写 go/no-go 结论 | DONE | NO-GO（原理由：正文覆盖率不足）；覆盖率已达 82.1%，**重评见 RD-D → RW-701** |
-| B5-03 | 仅 go 后：新增依赖与 feature flags | SKIPPED | no-go 是合法交付；若 RD-D 改判需重开 |
-| B5-04 | 迁移 `0011_semantic_search` + 模型 | SKIPPED | 同上；`0011` 未建与 no-go 一致 |
-| B5-05 | 嵌入/向量索引抽象 | SKIPPED | 同上 |
-| B5-06 | 增量索引后台任务 | SKIPPED | 同上 |
-| B5-07 | 语义/混合检索 API（RRF） | SKIPPED | 同上 |
-| B5-08 | 搜索页模式切换 UI | SKIPPED | 同上 |
-| B5-09 | 设置页语义索引卡片 | SKIPPED | 同上 |
-| B5-10 | 证据式回答（无生成模型） | SKIPPED | 同上 |
-| B5-11 | 生成式 RAG（可选开关） | SKIPPED | 同上 |
-| B5-12 | fake provider 测试、隐私检查、B5 报告 | SKIPPED | 同上 |
+| B5-01 | 技术 spike：模型/向量存储/真实库基准 | **DONE**（2026-10-27 重评） | [spikes/B5-01-embedding-spike.md](spikes/B5-01-embedding-spike.md) 六问齐备 + [server/scripts/spike_semantic.py](../../server/scripts/spike_semantic.py) + [spikes/B5-01-judgments.json](spikes/B5-01-judgments.json)。门槛对照：相关性 PASS（bge 12/15、multi 14/15，hybrid 15/15）、体积 PASS（wheel ≈161 MB / 权重 90.8–240.5 MB）、CI PASS（pytest 248 passed 未装 fastembed）、隐私 PASS（离线，SHA-256 已录）；**索引耗时 FAIL**（全库外推 bge 2 h 15 min、multi 1 h 24 min，线 20 min）、**hybrid P95 FAIL**（11/15、10/15 超 800 ms；语义单独 ≤8.8 ms 达标）、**常驻内存 FAIL**（外推 ≈661 / ≈824 MB，线 500 MB）。旧页 [spikes/B5-02-gonogo.md](spikes/B5-02-gonogo.md) 已标作废 |
+| B5-02 | 写 go/no-go 结论 | **DONE** | [spikes/B5-02-decision.md](spikes/B5-02-decision.md)：四问逐条落笔（§5 签核记录，2026-10-27）→ **NO-GO**。用户回复原文「你决定」，执行方按第 3 节「任一项不达标即 no-go」定案，未放宽任何门槛；B5-03 起仍**不得开工**（除非用户书面改写三条成本门槛） |
+| B5-03 | 仅 go 后：新增依赖与 feature flags | SKIPPED（B5-02 判 NO-GO） | 未新增任何依赖；`server/.venv` 保持干净，spike 依赖只存在于 `.spike-venv/`；`server/requirements-semantic.txt` **不创建**（决策 3 不批准） |
+| B5-04 | 迁移 `0011_semantic_search` + 模型 | SKIPPED（B5-02 判 NO-GO） | `alembic` 仍无 `0011`，真实库零改动 |
+| B5-05 | 嵌入/向量索引抽象 | SKIPPED（NO-GO） | 同上 |
+| B5-06 | 增量索引后台任务 | SKIPPED（NO-GO） | 同上；实测索引耗时是主要 FAIL 项（全库 ≥153,673 chunks，网格最优仍 147 min），若将来改判 go 需先定批次预算 |
+| B5-07 | 语义/混合检索 API（RRF） | SKIPPED（NO-GO） | 同上；RRF 仅在 spike 内实现（等深 top-5 融合） |
+| B5-08 | 搜索页模式切换 UI | SKIPPED（NO-GO） | 同上 |
+| B5-09 | 设置页语义索引卡片 | SKIPPED（NO-GO） | 同上 |
+| B5-10 | 证据式回答（无生成模型） | SKIPPED（NO-GO） | 同上 |
+| B5-11 | 生成式 RAG（可选开关） | SKIPPED（NO-GO） | 决策 4 选 A 不做；代码里不存在 `KB_RAG_ALLOW_REMOTE`，无任何远程 LLM 出站路径 |
+| B5-12 | fake provider 测试、隐私检查、B5 报告 | DONE（按 NO-GO 口径） | 隐私检查已实测（`HF_HUB_OFFLINE=1`、两个 onnx 的 SHA-256 与下载时间记录在报告 §3）；B5 报告即 [spikes/B5-01-embedding-spike.md](spikes/B5-01-embedding-spike.md) + 决策页；fake provider 测试属 B5-03+ 实现范畴，随 NO-GO 一并取消 |
 
 ## B6 · 收口与发布 — PARTIAL（3/5）
 
@@ -142,7 +152,7 @@
 | B6-01 | 全量回归（pytest/typecheck/lint/vitest/build/e2e/audit） | DONE | R5 收尾后：后端 **204 passed**、`npm run typecheck` 无错误、`npm test` **143 passed (22 files)**、`npm run build` 成功（REWORK §7.9） |
 | B6-02 | 移动端/暗色/无障碍/性能复核 | PARTIAL | 未做全量复核；R5 只覆盖队列/书架键盘与 `aria` 的可访问名，移动端抽屉、暗色范围（D5）与性能记录仍缺 |
 | B6-03 | 数据清理（逐次授权） | DONE | [reports/B6-cleanup-2026-10-27.md](reports/B6-cleanup-2026-10-27.md)：4 条 operation log + 备份 `20261027_004916` |
-| B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20** |
+| B6-04 | 文档、发布说明、回滚说明 | DONE | [reports/B2-B6-2026-10-26.md](reports/B2-B6-2026-10-26.md) + 清理报告回滚节；README 版本错误另记 **RD-20**。**R7 追加硬要求**：`docs/roadmap/RELEASE-2026-10.md` 至今并未存在，将来生成时必须写一条「已评估语义检索，因全库索引耗时（2 h 15 min vs 20 min）、常驻内存（≈661 MB vs 500 MB）、hybrid P95（11/15 超 800 ms）三条门槛不达标而不实现」，实测出处指向 [spikes/B5-01-embedding-spike.md](spikes/B5-01-embedding-spike.md)，不留 TODO 悬空（B6-04 原文第 6 条的要求此前无处落地） |
 | B6-05 | 最终报告与 CI 确认 | PARTIAL | 报告已有；执行轮 6 个提交仍未推送，CI 未确认；**RD-E / G4** |
 
 ---
@@ -154,8 +164,10 @@
 | 2026-10-26 | 全部 | 启动 | 等待用户启动执行轮 | 用户 | CLOSED（B0–B6 已执行） |
 | 2026-10-26 | B1/B3/B4/B5 | 迁移 (G3) | `0007`/`0009`/`0010` 已应用；`0011` 因 no-go 未建 | 用户 | CLOSED |
 | 2026-10-26 | B2/B6 | 真实数据 (G1) | B6-cleanup 已按逐项授权执行（4 条日志）；后续每次写入仍需新授权 | 用户 | CLOSED（本轮）；未来需重新授权 |
-| 2026-10-26 | B5 | 依赖 (G2) | fastembed/onnxruntime | 用户 | DEFERRED（no-go；见 RD-D） |
-| 2026-10-26 | B5 | 技术 | spike 后判 go/no-go | 用户 + 执行方 | CLOSED（no-go，2026-10-27 复核后待重评） |
+| 2026-10-27 | B5-02 | 决策 (D2/D3/RD-D) | spike 实测：索引耗时 2 h 15 min vs 20 min、内存外推 ≈661 MB vs 500 MB、hybrid P95 11/15 超 800 ms → 三条 FAIL。用户回复「你决定」，执行方按第 3 节原文规则定 **NO-GO**，四问记录见 [spikes/B5-02-decision.md](spikes/B5-02-decision.md) §5 | 用户→执行方 | **CLOSED（NO-GO）**；改判 go 需用户书面改写三条成本门槛 |
+| 2026-10-27 | B5-03 | 依赖 (G2) | `fastembed==0.9.1` + `onnxruntime==1.31.1`（31 包 / wheel ≈161 MB，余量仅 39 MB）——**不批准**：不写 `requirements-semantic.txt`、不进 CI/镜像；hnswlib 实测不需要 | 用户 | CLOSED（拒绝，功能不落地故无必要） |
+| 2026-10-27 | B5 收尾 | 磁盘 | `.spike-venv/`（175 MB）+ `server/scripts/spike-out/`（≈1.66 GB，含 1.33 GB 库副本与 332 MB 权重）是否删除 | 用户 | **OPEN（未确认前不删）**；永久证据已入库，删除不影响可复核性 |
+| 2026-10-27 | 建议 R8 | 新批次 | 修 `/api/search` 的中文关键词通道（F-15）：2 字词必然退化为四列全表 `LIKE`（694–1,312 ms）且 FTS 对 2 字词静默返回 0 行。R7 实测证明这才是用户「搜不到/搜得慢」的根因，属 B5 之外的独立缺陷，故本批只登记不动代码 | 用户 | **OPEN（等指令才开工）**；无新依赖、无迁移，预计只碰 `search.py` + 测试 |
 | 2026-10-26 | B2/B6 | 技术 | 扫描版 PDF 是否装 tesseract（D4） | 用户 | OPEN（维持不装） |
 | 2026-10-26 | B3 | 范围 | 暗色模式覆盖范围（D5） | 用户 | OPEN |
 | 2026-10-26 | 全部 | 推送 (G4) | 每批单独提交；推送需逐次确认 | 用户 | OPEN |
@@ -175,6 +187,8 @@
 | 2026-10-27 | 清理脚本 | 真实数据变更由未入库代码完成，无法复现 | 证据链断裂 | **RD-04 → RW-201** | FIXED（`server/scripts/reextract_content.py`、`auto_classify.py`，见 REWORK §7.4） |
 | 2026-10-27 | [progress.md](progress.md) | 70 行任务表被批次汇总覆盖 | 无法回答「还差哪些任务」 | **RD-19 → RW-202** | FIXED（本文件） |
 | 2026-10-27 | `documents.content` | 1 本 PDF 的 content 是 UTF-16LE 残留（首字符 NUL），SQLite 长度 0、Python 视为非空 | 质量口径与 `reindex_job` 差 1 本 | REWORK F-8 | 已在 reextract 脚本内按质量口径处理；`reindex_job` 口径未纳入 R6，仍待排期 |
+| 2026-10-27 | [server/app/routers/search.py:192-197](../../server/app/routers/search.py#L192-L197) | 查询含任一 <3 字词时整条退化为 `_search_ilike` 四列全表扫描；实测关键词通道 694–1,312 ms，而 2 字词强制走 FTS 会静默返回 0 行 | 中文搜索又慢又漏；B5 hybrid 延迟 FAIL 的唯一成因 | **REWORK F-15** | OPEN → **建议作为 R8 主任务**（B5 已 NO-GO，但这条与嵌入无关，是现有 `/api/search` 自身的缺陷：慢 + 静默漏配；R7 只登记未动代码） |
+| 2026-10-27 | [server/app/services/content_extract.py:21](../../server/app/services/content_extract.py#L21) + 切片 `MAX_CHUNKS=200` | 入库正文上限 200,000 字符，切片只覆盖前 ≈136,120 字符 | 全库 633/1,060 本（59.7%）尾部 ≈32% 内容永远进不了任何索引 | **REWORK F-16** | OPEN（B5 判 NO-GO 后，`MAX_CHUNKS=200` 那一半不再有消费方；`MAX_CHARS=200_000` 的入库截断仍是既成事实——633/1,060 本长书的尾部 ≈32% 内容既进不了语义索引，也没有别的读取方，除非将来做全文/摘要。降低优先，不排期；若重开 B5 需与门槛改写一并决定） |
 
 ## 批次切换记录
 
@@ -186,6 +200,8 @@
 | 2026-10-27 | R3 | R4 | 用户（「真实现」：RD-A 选 A） | R3 提交 `0bf75bc`；R4 = RW-401/402 |
 | 2026-10-27 | R4 | R5（最小集） | 用户（「继续」，按 REWORK 默认建议） | R4 提交 `a8cffbf`；R5 = RW-501/502/503；RW-504/505 等 RD-B |
 | 2026-10-27 | R5（最小集） | R5 收尾（RW-504/505） | 用户（「补 504/505 最小版（推荐）」） | RD-B 定为最小版；RW-504/505 已完成并提交 `65d98d5`（G4 前不推送） |
+| 2026-10-27 | R6 | R7（RW-701 B5 重评） | 用户（「继续」，RD-D 默认「重评」） | R6 提交 `fef49c7` + 文档标记 `da2d5d3`；R7 只跑 spike（隔离 venv + 库副本只读），**产品代码零改动** |
+| 2026-10-27 | R7（签核） | 下一批（未定） | 用户（「你决定」→ 四问由执行方按第 3 节原文规则定） | **B5 判 NO-GO**，B5-03~B5-12 保持 SKIPPED；依赖 G2 拒绝、生成式 RAG 不做；R7 单独提交（G4 前不推送）。待用户指令的两件事：是否开工 **R8＝修 F-15 中文关键词通道**、是否删除 spike 盘（≈1.84 GB） |
 
 ## 任务书偏离记录
 
@@ -196,3 +212,8 @@
 | 2026-10-27 | 数据清理 | 入库脚本可复现 | 一次性未入库代码 | 赶进度 | 否（RD-04；RW-201 已补） |
 | 2026-10-27 | B3-06/B3-08/B3-09 | 分类侧栏增强、BookCard 拆分、书架虚拟化 | 只做 facets 侧栏 + 独立 BookCover；不拆 BookCard、不接虚拟化 | RD-B 选「补 504/505 最小版」 | 是（用户选择） |
 | 2026-10-27 | B4-06 | 队列排序（含拖拽） | 上移/下移 + 状态动作；拖拽未做 | RD-B 最小版 | 是（用户选择） |
+| 2026-10-27 | B5-02 | 验收条款「结论页有用户明确回复记录（时间 + 选择）」 | 用户回复原文只有「你决定」，未逐条选；四问由执行方按任务书第 3 节原文规则定并把依据写进 §5 | 用户把选择权整体交出。执行方因此**只做保守方向的选择**（不放宽门槛、不批准新依赖、不接远程 LLM），并把每项的可推翻条件写明，用户随时可改判 | 是（用户指令「你决定」，选择结果已回写 [spikes/B5-02-decision.md](spikes/B5-02-decision.md) §5 等其确认） |
+| 2026-10-27 | B5-01 | 候选模型 `intfloat/multilingual-e5-small` | 第二候选换成 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | fastembed 0.9.1 的 41 个受支持模型里没有 e5-small，e5 只有 large（2.24 GB，单权重即超第 3 节 500 MB 线） | 否（需用户在决策 2 确认换候选） |
+| 2026-10-27 | B5-01 | 切片样本 20 本 | 50 本（epub 28 / pdf 16 / txt 6） | 增强代表性；未降低任何门槛 | 否（无害偏离，报告 §2 已记） |
+| 2026-10-27 | B5-01 | 第 5 项「暴力检索 >800 ms 才测 hnswlib」 | 未安装 hnswlib | 实测语义暴力点积全库外推 53–70 ms，触发条件不成立；hybrid 超标另有成因（F-15） | 否 |
+| 2026-10-27 | B5-01 | CI 门槛「pytest / build / docker 全绿」 | 本轮只重跑 pytest（248 passed, 2 warnings, 21.32s） | spike 零产品代码改动，`npm run build`/`docker build` 沿用 R6（`fef49c7`）的绿状态；已在报告 §9 注明未重跑 | 否 |
