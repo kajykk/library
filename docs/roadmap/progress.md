@@ -12,11 +12,11 @@
 
 | 项目 | 值 |
 |---|---|
-| 当前批次 | **R8a · 中文关键词检索（已做完，等验收）**——报告 [reports/R8a-2026-10-27.md](reports/R8a-2026-10-27.md)，任务书 [R8-chinese-search.md](R8-chinese-search.md)；返工 R1–R7 已提交（R6 = `fef49c7`，R7 = `692ff1b`），**R8a 未提交**（RD-E/D6：验收后才 commit），G4 未授权故不推送；B5 结论 **NO-GO** |
-| 当前任务 | RW-801~RW-807 **全部 DONE**（`/api/search` 测试 0 → 30 例；`pytest` 248 → **306 passed**；bigram 测量报告 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md)）。停在验收 gate：§4 的 summary 行按 RD-J=B 判 **FAIL（感知延迟未改善）**，q10 类罕见 2 字词 **828–2,072 ms** 已点名 |
-| 最后更新 | 2026-10-27（R8a 交付 + RW-807 测量 + F-17 登记；真实库与 `server/data/` 全程零写入） |
-| 阻塞项 | D4 OCR、D5 暗色范围、G4 推送授权；**R8a 唯一待决 = RD-J**（`summary.total` 口径，A 要动前端一行文案）；**R8b 前置待决 = RD-K（英文子串 vs 词边界）+ RD-L（索引维护路径）+ F-17 是否同批**；spike 盘现测完（≈**4.4 GB**）等用户决定删除 |
-| 下一步 | 用户验收 R8a → commit（不推送）；RD-J 签核 → 若 A 则补 summary 那条线与一行前端文案；RD-K/RD-L 有答案后再提 G3；B5-03~B5-12 依 NO-GO 仍**不得开工** |
+| 当前批次 | **R8a · 中文关键词检索（已验收，提交 `23f5dea`）**——报告 [reports/R8a-2026-10-27.md](reports/R8a-2026-10-27.md)，任务书 [R8-chinese-search.md](R8-chinese-search.md)；返工 R1–R7 与 R8a 一并推送：本批提交后 `main` 领先 `origin/main` **18 个 commit**（B0–B6 + R1–R7 + R8a），用户 2026-10-27「验收推送」= G4 对这一次推送的授权；B5 结论 **NO-GO** |
+| 当前任务 | RW-801~RW-807 **全部 DONE**（`/api/search` 测试 0 → 30 例；`pytest` 248 → **306 passed**；bigram 测量报告 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md)）。整批验收通过，但**两条已点名的未达标线仍在**：§4 的 summary 行按 RD-J=B 判 FAIL（感知延迟未改善），q10 类罕见 2 字词 **828–2,072 ms** 属 R8b |
+| 最后更新 | 2026-10-27（R8a 交付 + RW-807 测量 + F-17 登记 + 验收推送；真实库与 `server/data/` 全程零写入） |
+| 阻塞项 | D4 OCR、D5 暗色范围；**RD-J 仍未逐条签核**（验收 = 接受按 B 实现的现状；改判 A 随时可做，需动前端一行文案）；**R8b 前置待决 = RD-K（英文子串 vs 词边界）+ RD-L（索引维护路径）+ F-17 是否同批**；G3 未申请；spike 盘现测完（≈**4.4 GB**）等用户决定删除 |
+| 下一步 | RD-J 若改 A → 补 summary 那条线与一行前端文案；RD-K/RD-L/F-17 有答案后再提 G3（R8b `0011_bigram_fts`）；B5-03~B5-12 依 NO-GO 仍**不得开工**；下一批推送仍需用户逐次授权 |
 
 状态口径：`DONE` / `PARTIAL` / `TODO` / `SKIPPED`。证据里的 `RD-*`/`RW-*` 均指 [REWORK-2026-10-27.md](REWORK-2026-10-27.md)。
 
@@ -171,13 +171,13 @@
 | 2026-10-27 | R8a | 决策 (RD-G) | 整句中文查询语义是否从「精确短语（实测 11/11 打空）」改为「关键词 OR + 命中词数/bm25 排序」 | 用户 | **CLOSED = A**（用户 2026-10-27「开工」按 R7 先例采纳保守默认；契约已按此改写，见 api-contracts.md §11）。实测：15/15 非空、相关性 13/15 |
 | 2026-10-27 | R8a | 决策 (RD-H) | 是否授权改写 `api-contracts.md` 第 683 行「`GET /api/search` 行为不变」（B5 时代条款）并补写 R8 关键词契约 | 用户 | **CLOSED = 授权**：该行已替换为 6 条 R8a 契约（关键词 OR、滑窗补位、响应字段与 `<mark>`/220 字不变、`limit` 1–100、summary 共用路由、`total` 仍精确待 RD-J） |
 | 2026-10-27 | R8a | 决策 (RD-I) | 短词（<3 字）是否继续搜正文。实测「弗洛伊德 文明 本能」全列命中 521 本、只扫元数据仅 17 本 → 「短词不搜正文」不是可行降级 | 用户 | **CLOSED = A（继续搜正文）**：常见短词 13–36 ms，罕见短词（起卦/断卦）仍 828–2,072 ms，这部分由 R8b 解决 |
-| 2026-10-27 | R8a | 决策 (**RD-J**，新) | `/search/summary` 的 `total`：A = 候选集内计数 + `total_capped`（10–90 ms，需把 `src/app/search/page.tsx:250` 的「共」改成「约」）；B = 保持精确 COUNT | 用户 | **OPEN（本轮按 B 实现）**：实测 summary 中位 **315.0 ms**、最大 645.8 ms = `/search` 的 **5.8×** → §4 的 summary 线 FAIL，前端 `Promise.all` 下**用户感知延迟不变**。选 A 才能过线，A 动前端一行，所以没替用户决定 |
+| 2026-10-27 | R8a | 决策 (**RD-J**，新) | `/search/summary` 的 `total`：A = 候选集内计数 + `total_capped`（10–90 ms，需把 `src/app/search/page.tsx:250` 的「共」改成「约」）；B = 保持精确 COUNT | 用户 | **OPEN（本轮按 B 实现）**：实测 summary 中位 **315.0 ms**、最大 645.8 ms = `/search` 的 **5.8×** → §4 的 summary 线 FAIL，前端 `Promise.all` 下**用户感知延迟不变**。选 A 才能过线，A 动前端一行，所以没替用户决定。**验收补记**：用户 2026-10-27「验收推送」接受的是按 B 实现的现状，A/B 本身仍未逐条选 → 保持 OPEN；改判 A 时补 §4 的 summary 线与 [src/app/search/page.tsx:250](../../src/app/search/page.tsx#L250) 的「共」→「约」 |
 | 2026-10-27 | R8b | 决策 (**RD-K**，新) | bigram 用 `unicode61` 后英文从**子串匹配**变**词边界匹配**：`hard` 命中 599 → 328 篇（差集里 52 篇是 Richard、另有 Hardy/Hardt）。A = 接受词边界（磁盘 −199 MiB）；B = 保留 trigram 兜英文（磁盘 1.35×）；C = 英文也换 bigram 但前端补一个「包含匹配」开关 | 用户 | **OPEN**：13 条中文查询的召回集合与现状逐条相等，只有 q13/q14 两条英文查询受影响（−179 / −102 篇）。数据见 [spikes/R8-bigram-measure.md](spikes/R8-bigram-measure.md) §6.3 |
 | 2026-10-27 | R8b | 决策 (**RD-L**，新) | bigram 索引的维护路径。硬约束：本机与 `server/.venv` 都是 **SQLite 3.42.0**，`contentless_delete=1` 不支持、contentless 表不能 `DELETE` | 用户 | **OPEN**：实测三选一——(a) 应用侧维护 + 普通 fts5 表（单行 20 万字 ≈**64 ms**，体积 755.6 MiB，且能索引到 NUL 之后的文本）；(b) contentless + 每次全库重建（255.3 MiB，74.9 s/次）；(c) 升 SQLite（新依赖，超出 R8b「不装依赖」范围）。SQL 触发器方案已排除：递归 CTE 展开单行 **0.8–2,455.8 ms**，且 `length()` 在 NUL 截断 → 复刻 F-17 盲区 |
 | 2026-10-27 | R8b | 迁移 (G3) | bigram（2 字 n-gram）FTS 索引需新迁移 `0011_bigram_fts` + 全库重建 | 用户 | **OPEN（未申请）**：数字已齐（重建 **74.9 s**、展开占 24.5 s；磁盘 **−199 MiB** 替换口径 或 **+755.6 MiB** 并存口径；回滚 = drop 表 + 撤应用侧写入口，`documents` 零改动）；但 RD-K、RD-L、F-17 三条未决 → 本批不提交申请 |
 | 2026-10-26 | B2/B6 | 技术 | 扫描版 PDF 是否装 tesseract（D4） | 用户 | OPEN（维持不装） |
 | 2026-10-26 | B3 | 范围 | 暗色模式覆盖范围（D5） | 用户 | OPEN |
-| 2026-10-26 | 全部 | 推送 (G4) | 每批单独提交；推送需逐次确认 | 用户 | OPEN |
+| 2026-10-26 | 全部 | 推送 (G4) | 每批单独提交；推送需逐次确认 | 用户 | **本批已授权并执行**：用户 2026-10-27「验收推送」→ `d8dc64d..23f5dea`（**18 个 commit**：B0–B6 + R1–R7 + R8a）已在 `origin/main`。网络实况：默认解析 `20.205.243.166` 与此前的边缘 IP `140.82.113.3` 都连不上（`curl` 超时），先探到 `140.82.113.4 / 112.3 / 112.4 / 114.3` 四个可用 IP，再用一次性 `git -c http.curloptResolve=github.com:443:140.82.113.4 push origin main` 成功；**未改任何 git 配置**。这是**一次性**授权，后续批次仍回到「逐次确认」，本条不转长期放行 |
 
 ## 发现（不在本批顺手修）
 
@@ -213,6 +213,7 @@
 | 2026-10-27 | R7（签核） | 下一批（未定） | 用户（「你决定」→ 四问由执行方按第 3 节原文规则定） | **B5 判 NO-GO**，B5-03~B5-12 保持 SKIPPED；依赖 G2 拒绝、生成式 RAG 不做；R7 已提交 `692ff1b`（G4 前不推送）。待用户指令的两件事：是否开工 **R8＝修 F-15 中文关键词通道**、是否删除 spike 盘（≈1.84 GB） |
 | 2026-10-27 | R7 | **R8a（中文关键词检索·查询侧）** | 用户（「启动」+ 选择「分两批：先查询侧，再评估 bigram 索引（推荐）」；spike 盘「先留着，等 R8 测完再删」） | 本轮为 **docs-only**：新增任务书 [R8-chinese-search.md](R8-chinese-search.md)（RW-801~807 + 门槛表 + RD-G/H/I），产品代码零改动。两轮只读探针（库副本 `mode=ro&immutable=1`）产出 §1 的 E1–E13；R8b 需 G3，**未申请、未开工** |
 | 2026-10-27 | R8a（任务书） | R8a（执行，**待签核**） | 用户（「开工」→ 按 R7 先例采纳任务书保守默认 RD-G=A / RD-H=授权 / RD-I=A；RD-J 留给用户） | RW-801~807 全 DONE。`search.py` 重写 + 新增 `query_terms.py`；15 条查询 15/15 非空（基线 11 条打空），`/search` 进程内中位 **54.1 ms**；`pytest tests -q` **306 passed**（R8a 前 248）。**门槛有一条未达**（summary 中位 315.0 ms = 5.8×，因 RD-J 按 B 实现）+ 罕见短词 q10 仍 828.8 ms。**未提交**（RD-E/D6：等用户确认），**未推送**（G4 未授权）。报告 [reports/R8a-2026-10-27.md](reports/R8a-2026-10-27.md) |
+| 2026-10-27 | R8a（执行，待签核） | **R8a 验收通过 → 提交并推送** | 用户（「验收推送」） | 提交 `23f5dea`（13 文件 / +2,362 −237）；G4 首次授权 → 连同此前 17 个 commit（B0–B6 + R1–R7）一次性推 `origin/main`。**验收只覆盖已交付的查询侧**：RD-J、RD-K、RD-L、F-17 与 spike 盘（≈4.4 GB）仍 OPEN，不构成对开放项的代答 |
 
 ## 任务书偏离记录
 
